@@ -8,6 +8,7 @@ import type { User } from '../types'
 
 const users = ref<User[]>([])
 const loading = ref(false)
+const refreshSpinning = ref(false)
 const showDialog = ref(false)
 const saving = ref(false)
 const errorMessage = ref('')
@@ -28,6 +29,12 @@ const fetchUsers = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const onRefreshClick = () => {
+  refreshSpinning.value = true
+  window.setTimeout(() => { refreshSpinning.value = false }, 1000)
+  fetchUsers()
 }
 
 const openDialog = (user?: User) => {
@@ -105,16 +112,16 @@ onMounted(fetchUsers)
         <button
           v-if="authState.user?.is_admin"
           @click="openDialog()"
-          class="h-11 px-4 rounded-xl bg-accent text-white hover:bg-accent/90 flex items-center gap-2 text-sm font-bold transition-all"
+          class="h-11 px-4 rounded-xl bg-accent text-white flex items-center gap-2 text-sm font-bold transition-all border border-transparent hover:brightness-110 hover:border-white/20 hover:shadow-lg hover:shadow-accent/30 hover:-translate-y-0.5"
         >
           <Plus :size="16" />
           创建用户
         </button>
         <button
-          @click="fetchUsers"
-          class="h-11 px-4 rounded-xl bg-white/5 border border-white/10 text-white/70 hover:text-white flex items-center gap-2 text-sm font-bold transition-all"
+          @click="onRefreshClick"
+          class="h-11 px-4 rounded-xl bg-white/5 border border-white/10 text-white/70 hover:text-white hover:bg-white/10 flex items-center gap-2 text-sm font-bold transition-all"
         >
-          <RefreshCw :size="16" :class="loading ? 'animate-spin' : ''" />
+          <RefreshCw :size="16" :class="(loading || refreshSpinning) ? 'animate-spin' : ''" />
           刷新
         </button>
       </div>

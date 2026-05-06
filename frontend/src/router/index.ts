@@ -2,7 +2,6 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import ExternalFavoritesView from '../views/ExternalFavoritesView.vue'
-import XImportView from '../views/XImportView.vue'
 import UsersView from '../views/UsersView.vue'
 
 const router = createRouter({
@@ -28,11 +27,6 @@ const router = createRouter({
       path: '/external',
       name: 'external-favorites',
       component: ExternalFavoritesView
-    },
-    {
-      path: '/x-import',
-      name: 'x-import',
-      component: XImportView
     },
     {
       path: '/users',

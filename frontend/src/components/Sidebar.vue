@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Book, ChevronLeft, ChevronRight, Film, Globe2, Home, Image as ImageIcon, LogOut, Settings as SettingsIcon, Star, Twitter, Users } from 'lucide-vue-next'
+import { Book, ChevronLeft, ChevronRight, Film, Globe2, Home, Image as ImageIcon, LogOut, Settings as SettingsIcon, Star, Users } from 'lucide-vue-next'
 import type { User } from '../types'
 
 const props = defineProps<{
@@ -75,11 +75,6 @@ const toggle = () => {
       <router-link to="/external" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="外部收藏">
         <Globe2 :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">外部收藏</span>
-      </router-link>
-
-      <router-link to="/x-import" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="X 一键导入">
-        <Twitter :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
-        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">X 一键导入</span>
       </router-link>
     </nav>
 

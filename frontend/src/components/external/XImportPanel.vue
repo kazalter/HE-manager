@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import {
   AlertTriangle,
+  AtSign,
   CheckCircle2,
   ExternalLink,
   FolderOpen,
@@ -10,7 +11,6 @@ import {
   Play,
   PlayCircle,
   RefreshCw,
-  Twitter,
   Upload,
   X as XIcon,
 } from 'lucide-vue-next'
@@ -179,7 +179,7 @@ onUnmounted(() => {
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-3 text-white">
             <div class="w-10 h-10 rounded-xl bg-accent/15 text-accent flex items-center justify-center border border-accent/20">
-              <Twitter :size="20" />
+              <AtSign :size="20" />
             </div>
             <div>
               <h2 class="text-base font-black">X (Twitter)</h2>
