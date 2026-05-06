@@ -1,0 +1,25 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Backend
+backend/__pycache__/
+backend/*.pyc
+backend/venv/
+backend/.env
+backend/instance/
+backend/.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database/Storage
+*.db
+*.sqlite
+backend/storage/
+frontend/public/covers/

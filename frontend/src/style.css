@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --color-background: 5 5 7;
+  --color-sidebar: 17 17 20;
+  --color-accent: 129 140 248;
+  --color-accent-glow: 165 180 252;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+}
+
+:root[data-theme="midnight"] {
+  --color-background: 5 5 7;
+  --color-sidebar: 17 17 20;
+  --color-accent: 129 140 248;
+  --color-accent-glow: 165 180 252;
+}
+
+:root[data-theme="sakura"] {
+  --color-background: 17 9 16;
+  --color-sidebar: 34 18 31;
+  --color-accent: 244 114 182;
+  --color-accent-glow: 251 207 232;
+}
+
+:root[data-theme="forest"] {
+  --color-background: 5 14 12;
+  --color-sidebar: 11 31 27;
+  --color-accent: 52 211 153;
+  --color-accent-glow: 167 243 208;
+}
+
+:root[data-theme="amber"] {
+  --color-background: 15 12 8;
+  --color-sidebar: 32 26 18;
+  --color-accent: 245 158 11;
+  --color-accent-glow: 253 230 138;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: rgb(var(--color-background));
+}
+
+/* Custom scrollbar for premium look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+/* Fast atomic modal transition */
+.modal-snap-enter-active,
+.modal-snap-leave-active {
+  transition: opacity 0.15s ease-out;
+}
+
+.modal-snap-enter-active .modal-content,
+.modal-snap-leave-active .modal-content {
+  transition: transform 0.15s ease-out;
+}
+
+.modal-snap-enter-from,
+.modal-snap-leave-to {
+  opacity: 0;
+}
+
+.modal-snap-enter-from .modal-content,
+.modal-snap-leave-to .modal-content {
+  transform: scale(0.98);
+}
