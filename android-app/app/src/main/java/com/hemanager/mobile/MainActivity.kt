@@ -2,12 +2,21 @@ package com.hemanager.mobile
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.TextView
 import android.widget.Toast
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.disk.DiskCache
+import coil.load
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
+import coil.request.Disposable
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Scale
@@ -151,11 +160,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
@@ -167,12 +179,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -186,6 +201,7 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -245,6 +261,7 @@ class MainActivity : ComponentActivity() {
     private val imageGalleryMinColumns = 3
     private val imageGalleryMaxColumns = 7
     private val imageGalleryTilePrefKey = "mobile_image_gallery_tile_dp"
+    private val imageGalleryPerfLogTag = "ImageGalleryPerf"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -1603,16 +1620,21 @@ class MainActivity : ComponentActivity() {
         val density = LocalDensity.current
         var coverPrefetchJob by remember { mutableStateOf<Job?>(null) }
         val coverPrefetchDisposables = remember { mutableListOf<coil.request.Disposable>() }
+        var visibleCoverWarmupJob by remember { mutableStateOf<Job?>(null) }
+        val visibleCoverWarmupDisposables = remember { mutableListOf<coil.request.Disposable>() }
+        var imageGalleryRecyclerView by remember { mutableStateOf<RecyclerView?>(null) }
+        var imageGalleryBackTopVisible by remember { mutableStateOf(false) }
         var imageGalleryCurrentColumns by remember { mutableStateOf(5) }
         val imageGalleryNetworkAllowed = remember { AtomicBoolean(true) }
         val imageGalleryNetworkAllowedProvider = remember(imageGalleryNetworkAllowed) {
             { imageGalleryNetworkAllowed.get() }
         }
+        val imageGalleryLastPrefetchStart = remember { AtomicInteger(0) }
         var imageGalleryLoadGeneration by remember { mutableIntStateOf(0) }
         val showBackToTopButton by remember {
             derivedStateOf {
                 if (mediaType == "image") {
-                    imageGridState.firstVisibleItemIndex > 1 || imageGridState.firstVisibleItemScrollOffset > 360
+                    imageGalleryBackTopVisible
                 } else {
                     listState.firstVisibleItemIndex > 1 || listState.firstVisibleItemScrollOffset > 360
                 }
@@ -1715,6 +1737,15 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        fun imageGalleryWarmupMediaIndices(): List<Int> {
+            val visibleIndices = imageGalleryVisibleMediaIndices()
+            if (visibleIndices.isNotEmpty()) return visibleIndices
+            val startIndex = coverPrefetchStartIndex()
+            val fallbackCount = imageGalleryCurrentColumns.coerceIn(3, 7) * 4
+            return (startIndex until (startIndex + fallbackCount))
+                .filter { it in visibleItems.indices }
+        }
+
         fun coverPrefetchSize(): Pair<Int, Int> {
             return if (mediaType == "image") {
                 val tilePx = with(density) { renderedImageTileDp.dp.toPx().roundToInt() }
@@ -1737,6 +1768,54 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        fun cancelVisibleCoverWarmup() {
+            visibleCoverWarmupJob?.cancel()
+            synchronized(visibleCoverWarmupDisposables) {
+                visibleCoverWarmupDisposables.forEach { it.dispose() }
+                visibleCoverWarmupDisposables.clear()
+            }
+        }
+
+        fun scheduleVisibleCoverWarmup(deferMs: Long = 0L) {
+            if (mediaType != "image") return
+            cancelVisibleCoverWarmup()
+            val visibleIndices = imageGalleryWarmupMediaIndices()
+            if (visibleIndices.isEmpty()) return
+            val (reqWidth, reqHeight) = coverPrefetchSize()
+            val itemsToLoad = visibleIndices
+                .distinct()
+                .mapNotNull { visibleItems.getOrNull(it) }
+                .filter { item ->
+                    val url = coverUrl(serverUrl, token, item)
+                    url != null && !coverImageMemoryCached(url, reqWidth, reqHeight)
+                }
+            if (itemsToLoad.isEmpty()) return
+            logImageGalleryPerf(
+                "visible warmup scheduled count=${itemsToLoad.size} size=${reqWidth}x$reqHeight defer=$deferMs visible=${imageGalleryVisibleMediaIndices().isNotEmpty()}"
+            )
+            visibleCoverWarmupJob = scope.launch(Dispatchers.IO) warmup@{
+                if (deferMs > 0L) delay(deferMs)
+                if (!imageGalleryNetworkAllowed.get()) return@warmup
+                itemsToLoad.chunked(imageGalleryCurrentColumns.coerceIn(3, 7)).forEach { chunk ->
+                    if (!imageGalleryNetworkAllowed.get()) return@warmup
+                    coroutineScope {
+                        chunk.forEach { item ->
+                            launch {
+                                val url = coverUrl(serverUrl, token, item) ?: return@launch
+                                val disposable = coverImageLoader.enqueue(
+                                    coverImageRequest(url, reqWidth, reqHeight, crossfadeMillis = 0)
+                                )
+                                synchronized(visibleCoverWarmupDisposables) {
+                                    visibleCoverWarmupDisposables.add(disposable)
+                                }
+                            }
+                        }
+                    }
+                    delay(24L)
+                }
+            }
+        }
+
         fun scheduleCoverPrefetch(deferMs: Long = if (mediaType == "image") 220L else 0L) {
             cancelCoverPrefetches()
             val (reqWidth, reqHeight) = coverPrefetchSize()
@@ -1745,25 +1824,30 @@ class MainActivity : ComponentActivity() {
                 if (visibleIndices.isNotEmpty()) {
                     val firstVisible = visibleIndices.minOrNull() ?: 0
                     val lastVisible = visibleIndices.maxOrNull() ?: firstVisible
-                    val beforeCount = imageGalleryCurrentColumns
-                    val afterRows = when {
-                        imageGalleryCurrentColumns >= 6 -> 3
-                        imageGalleryCurrentColumns == 5 -> 4
-                        else -> 5
+                    val previousStart = imageGalleryLastPrefetchStart.getAndSet(firstVisible)
+                    val scrollingDown = firstVisible >= previousStart
+                    val forwardRows = when {
+                        imageGalleryCurrentColumns >= 6 -> 2
+                        imageGalleryCurrentColumns == 5 -> 3
+                        else -> 4
                     }
-                    val afterCount = imageGalleryCurrentColumns * afterRows
-                    val current = (firstVisible..lastVisible).toList()
-                    val ahead = ((lastVisible + 1)..(lastVisible + afterCount))
+                    val aheadCount = imageGalleryCurrentColumns * if (scrollingDown) forwardRows else 1
+                    val behindCount = imageGalleryCurrentColumns * if (scrollingDown) 1 else 2
+                    val ahead = ((lastVisible + 1)..(lastVisible + aheadCount))
                         .filter { it in visibleItems.indices }
-                    val behind = ((firstVisible - beforeCount) until firstVisible)
+                    val behind = ((firstVisible - behindCount) until firstVisible)
                         .filter { it in visibleItems.indices }
-                    (current + ahead + behind)
+                    if (scrollingDown) {
+                        ahead + behind.asReversed()
+                    } else {
+                        behind.asReversed() + ahead
+                    }
                         .distinct()
                         .mapNotNull { visibleItems.getOrNull(it) }
                 } else {
                     val startIndex = coverPrefetchStartIndex()
-                    val beforeCount = imageGalleryCurrentColumns
-                    val afterCount = imageGalleryCurrentColumns * 4
+                    val beforeCount = (imageGalleryCurrentColumns / 2).coerceAtLeast(1)
+                    val afterCount = imageGalleryCurrentColumns * 3
                     visibleItems
                         .drop((startIndex - beforeCount).coerceAtLeast(0))
                         .take(beforeCount + afterCount)
@@ -1773,13 +1857,21 @@ class MainActivity : ComponentActivity() {
                 visibleItems
                     .drop((startIndex - 8).coerceAtLeast(0))
                     .take(64)
-            }.filter { coverUrl(serverUrl, token, it) != null }
+            }.filter { item ->
+                val url = coverUrl(serverUrl, token, item)
+                url != null && !coverImageMemoryCached(url, reqWidth, reqHeight)
+            }
             if (itemsToPrefetch.isEmpty()) return
+            if (mediaType == "image") {
+                logImageGalleryPerf(
+                    "prefetch scheduled count=${itemsToPrefetch.size} size=${reqWidth}x$reqHeight cols=$imageGalleryCurrentColumns defer=$deferMs"
+                )
+            }
             coverPrefetchJob = scope.launch(Dispatchers.IO) prefetch@{
                 if (deferMs > 0L) delay(deferMs)
                 if (mediaType == "image" && !imageGalleryNetworkAllowed.get()) return@prefetch
-                val chunkSize = if (mediaType == "image") 4 else 18
-                val chunkDelay = if (mediaType == "image") 90L else 24L
+                val chunkSize = if (mediaType == "image") 1 else 18
+                val chunkDelay = if (mediaType == "image") 120L else 24L
                 itemsToPrefetch.chunked(chunkSize).forEach { chunk ->
                     if (mediaType == "image" && !imageGalleryNetworkAllowed.get()) return@prefetch
                     coroutineScope {
@@ -1813,7 +1905,12 @@ class MainActivity : ComponentActivity() {
             if (visibleItems.isEmpty()) return@LaunchedEffect
             if (mediaType == "image" && (imageGalleryPinching || imageGallerySettling)) return@LaunchedEffect
             delay(180L)
-            scheduleCoverPrefetch()
+            if (mediaType == "image") {
+                scheduleVisibleCoverWarmup()
+                scheduleCoverPrefetch(deferMs = 420L)
+            } else {
+                scheduleCoverPrefetch()
+            }
         }
 
         LaunchedEffect(listState, swipeController) {
@@ -1847,15 +1944,21 @@ class MainActivity : ComponentActivity() {
                 .distinctUntilChanged()
                 .collectLatest { scrolling ->
                     if (scrolling) {
+                        cancelVisibleCoverWarmup()
                         cancelCoverPrefetches()
-                        if (mediaType == "image") imageGalleryNetworkAllowed.set(false)
+                        if (mediaType == "image") {
+                            imageGalleryNetworkAllowed.set(false)
+                            logImageGalleryPerf("scroll start: cancel prefetch, memory/disk only")
+                        }
                     } else {
                         delay(if (mediaType == "image") 180L else 120L)
                         if (mediaType == "image") {
                             imageGalleryNetworkAllowed.set(true)
+                            scheduleVisibleCoverWarmup()
                             imageGalleryLoadGeneration += 1
+                            logImageGalleryPerf("scroll settled: visible reload generation=$imageGalleryLoadGeneration")
                         }
-                        scheduleCoverPrefetch(deferMs = if (mediaType == "image") 260L else 0L)
+                        scheduleCoverPrefetch(deferMs = if (mediaType == "image") 520L else 0L)
                     }
                 }
         }
@@ -1967,7 +2070,7 @@ class MainActivity : ComponentActivity() {
             swipeController.close()
             scope.launch {
                 if (mediaType == "image") {
-                    imageGridState.animateScrollToItem(0)
+                    imageGalleryRecyclerView?.smoothScrollToPosition(0)
                 } else {
                     listState.animateScrollToItem(0)
                 }
@@ -2027,147 +2130,36 @@ class MainActivity : ComponentActivity() {
                             LaunchedEffect(galleryColumns) {
                                 imageGalleryCurrentColumns = galleryColumns
                             }
-                        LazyVerticalGrid(
-                            state = imageGridState,
-                            columns = GridCells.Fixed(galleryColumns),
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .imageGalleryPinchZoom(
-                                    enabled = true,
-                                    onPinchStart = { focalPoint ->
-                                        imageGalleryPinching = true
-                                        imageGallerySettling = false
-                                        imageGalleryInteractionsEnabled = false
-                                        imageGalleryPinchStartTileDp = renderedImageTileDp
-                                        imageGalleryTemporaryTileDp = renderedImageTileDp
-                                        imageGalleryAnchor = captureImageGalleryAnchor(focalPoint)
-                                        swipeController.close()
-                                    },
-                                    onPinch = { scale, _ ->
-                                        imageGalleryTemporaryTileDp = (imageGalleryPinchStartTileDp * scale)
-                                            .coerceIn(imageGalleryMinTileDp, imageGalleryMaxTileDp)
-                                        scheduleImageGalleryAnchorCorrection()
-                                    },
-                                    onPinchEnd = {
-                                        imageGalleryPinching = false
-                                        imageGallerySettling = true
-                                        imageGalleryStableTileDp = nearestImageGalleryPreset(
-                                            imageGalleryTemporaryTileDp,
-                                            availableWidthDp,
-                                            galleryGapDp
-                                        )
-                                        scheduleImageGalleryAnchorCorrection()
-                                        scope.launch {
-                                            delay(220L)
-                                            if (imageGallerySettling && !imageGalleryPinching) {
-                                                imageGallerySettling = false
-                                                imageGalleryTemporaryTileDp = imageGalleryStableTileDp
-                                                imageGalleryAnchor = null
-                                                galleryPrefs.edit().putFloat(imageGalleryTilePrefKey, imageGalleryStableTileDp).apply()
-                                                imageGalleryInteractionsEnabled = true
-                                            }
-                                        }
-                                    }
-                                )
-                                .pointerInput(swipeController) {
-                                    detectTapGestures(onTap = { swipeController.close() })
-                                },
-                            contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = 16.dp, bottom = 28.dp),
-                            horizontalArrangement = Arrangement.spacedBy(galleryGapDp.dp),
-                            verticalArrangement = Arrangement.spacedBy(galleryGapDp.dp)
-                        ) {
-                            item(key = "image-gallery-header", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-header") {
-                                Column(Modifier.padding(horizontal = 16.dp)) {
-                                    LibraryHeaderV2(
-                                        loading = loading,
-                                        viewMode = viewMode,
-                                        galleryMode = true,
-                                        onViewModeSelected = { viewMode = it },
-                                        onMenu = { scope.launch { drawerState.open() } },
-                                        onRefresh = { load(search) }
-                                    )
-                                }
-                            }
-                            item(key = "image-gallery-search", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-search") {
-                                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                                    SearchAndFilterPanelV2(
-                                        search = search,
-                                        onSearchChange = { search = it },
-                                        filters = mediaFilters,
-                                        selectedValue = mediaType,
-                                        onSelected = { mediaType = it },
-                                        statusFilters = statusFilters,
-                                        selectedStatusValue = statusFilter,
-                                        onStatusSelected = { statusFilter = it },
-                                        onOpenFilters = { filterSheetOpen = true }
-                                    )
-                                }
-                            }
-                            item(key = "image-gallery-error", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-error") {
-                                AnimatedVisibility(
-                                    visible = error != null,
-                                    enter = fadeIn(tween(180)) + expandVertically(),
-                                    exit = fadeOut(tween(160)) + shrinkVertically()
-                                ) {
-                                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
-                                        ErrorPanelV2(error = error ?: "", loading = loading, onRetry = { load(search) })
-                                    }
-                                }
-                            }
-                            item(key = "image-gallery-loading-line", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-loading-line") {
-                                AnimatedVisibility(
-                                    visible = loading,
-                                    enter = fadeIn(tween(160)),
-                                    exit = fadeOut(tween(160))
-                                ) {
-                                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
-                                        LoadingLineV2()
-                                    }
-                                }
-                            }
-                            if (loading && allItems.isEmpty()) {
-                                gridItems(
-                                    (0 until 30).toList(),
-                                    key = { "image-gallery-loading-$it" },
-                                    contentType = { "gallery-skeleton" }
-                                ) { index ->
-                                    ImageGallerySkeletonV2(index)
-                                }
-                            }
-                            if (!loading && error == null && visibleItems.isEmpty()) {
-                                item(key = "image-gallery-empty", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-empty") {
-                                    Column(Modifier.padding(horizontal = 16.dp)) {
-                                        EmptyStateV2()
-                                    }
-                                }
-                            }
-                            if (!loading || allItems.isNotEmpty()) {
-                                gridItems(
-                                    visibleItems,
-                                    key = { "image-gallery-${it.id}" },
-                                    contentType = { "gallery-tile" }
-                                ) { item ->
-                                    val itemCoverUrl = remember(serverUrl, token, item.coverPath) {
-                                        coverUrl(serverUrl, token, item)
-                                    }
-                                    val openGalleryItem = remember(item.id, serverUrl, token, visibleItems) {
-                                        { openItem(item, serverUrl, token, false, visibleItems) }
-                                    }
-                                    ImageGalleryTileV2(
-                                        coverUrl = itemCoverUrl,
-                                        label = item.title,
-                                        favorite = item.favorite,
-                                        missing = item.missing,
-                                        tileDp = actualImageTileDp,
-                                        columns = galleryColumns,
-                                        interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
-                                        networkAllowedProvider = imageGalleryNetworkAllowedProvider,
-                                        requestRestartKey = imageGalleryLoadGeneration,
-                                        onOpen = openGalleryItem
-                                    )
-                                }
-                            }
-                        }
+                            NativeImageGalleryRecyclerV2(
+                                items = visibleItems,
+                                serverUrl = serverUrl,
+                                token = token,
+                                loading = loading,
+                                error = error,
+                                search = search,
+                                mediaFilters = mediaFilters,
+                                statusFilters = statusFilters,
+                                selectedMediaType = mediaType,
+                                selectedStatus = statusFilter,
+                                viewMode = viewMode,
+                                columns = galleryColumns,
+                                tileDp = actualImageTileDp,
+                                interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
+                                playlist = visibleItems,
+                                onSearchChange = { search = it },
+                                onMediaSelected = { mediaType = it },
+                                onStatusSelected = { statusFilter = it },
+                                onOpenFilters = { filterSheetOpen = true },
+                                onViewModeSelected = { viewMode = it },
+                                onMenu = { scope.launch { drawerState.open() } },
+                                onRefresh = { load(search) },
+                                onRetry = { load(search) },
+                                onRecycler = { imageGalleryRecyclerView = it },
+                                onBackTopVisible = { visible -> imageGalleryBackTopVisible = visible },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clipToBounds()
+                            )
                         }
                     } else {
                     LazyColumn(
@@ -4383,6 +4375,488 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun NativeImageGalleryRecyclerV2(
+        items: List<MediaItem>,
+        serverUrl: String,
+        token: String,
+        loading: Boolean,
+        error: String?,
+        search: String,
+        mediaFilters: List<FilterOption>,
+        statusFilters: List<FilterOption>,
+        selectedMediaType: String,
+        selectedStatus: String,
+        viewMode: LibraryViewMode,
+        columns: Int,
+        tileDp: Float,
+        interactionsEnabled: Boolean,
+        playlist: List<MediaItem>,
+        onSearchChange: (String) -> Unit,
+        onMediaSelected: (String) -> Unit,
+        onStatusSelected: (String) -> Unit,
+        onOpenFilters: () -> Unit,
+        onViewModeSelected: (LibraryViewMode) -> Unit,
+        onMenu: () -> Unit,
+        onRefresh: () -> Unit,
+        onRetry: () -> Unit,
+        onRecycler: (RecyclerView) -> Unit,
+        onBackTopVisible: (Boolean) -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        val density = LocalDensity.current
+        val tilePx = remember(tileDp, density) {
+            with(density) { tileDp.dp.toPx().roundToInt() }
+        }
+        AndroidView(
+            modifier = modifier,
+            factory = { context ->
+                RecyclerView(context).apply {
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    clipToPadding = true
+                    clipChildren = true
+                    setPadding(0, 0, 0, dpView(this, 28))
+                    itemAnimator = null
+                    setHasFixedSize(true)
+                    setItemViewCacheSize(columns * 4)
+                    val galleryAdapter = NativeImageGalleryAdapterV2(
+                        serverUrl = serverUrl,
+                        token = token,
+                        loading = loading,
+                        error = error,
+                        search = search,
+                        mediaFilters = mediaFilters,
+                        statusFilters = statusFilters,
+                        selectedMediaType = selectedMediaType,
+                        selectedStatus = selectedStatus,
+                        viewMode = viewMode,
+                        columns = columns,
+                        tilePx = tilePx,
+                        interactionsEnabled = interactionsEnabled,
+                        playlist = playlist,
+                        onSearchChange = onSearchChange,
+                        onMediaSelected = onMediaSelected,
+                        onStatusSelected = onStatusSelected,
+                        onOpenFilters = onOpenFilters,
+                        onViewModeSelected = onViewModeSelected,
+                        onMenu = onMenu,
+                        onRefresh = onRefresh,
+                        onRetry = onRetry
+                    )
+                    adapter = galleryAdapter
+                    layoutManager = GridLayoutManager(context, columns).apply {
+                        spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+                            override fun getSpanSize(position: Int): Int {
+                                return if (galleryAdapter.isFullSpan(position)) spanCount else 1
+                            }
+                        }
+                    }
+                    addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                        override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                            val galleryAdapter = recyclerView.adapter as? NativeImageGalleryAdapterV2 ?: return
+                            val idle = newState == RecyclerView.SCROLL_STATE_IDLE
+                            galleryAdapter.networkAllowed = idle
+                            if (idle) {
+                                val lm = recyclerView.layoutManager as? GridLayoutManager ?: return
+                                val first = lm.findFirstVisibleItemPosition().coerceAtLeast(0)
+                                val last = lm.findLastVisibleItemPosition().coerceAtLeast(first)
+                                if (last >= first) {
+                                    galleryAdapter.notifyItemRangeChanged(first, last - first + 1, "network")
+                                }
+                            }
+                        }
+
+                        override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                            val lm = recyclerView.layoutManager as? GridLayoutManager ?: return
+                            val first = lm.findFirstVisibleItemPosition()
+                            val visible = first > 1 || recyclerView.computeVerticalScrollOffset() > 360
+                            onBackTopVisible(visible)
+                        }
+                    })
+                    onRecycler(this)
+                }
+            },
+            update = { recyclerView ->
+                val lm = recyclerView.layoutManager as? GridLayoutManager
+                if (lm?.spanCount != columns) {
+                    lm?.spanCount = columns
+                    recyclerView.setItemViewCacheSize(columns * 4)
+                }
+                val galleryAdapter = recyclerView.adapter as NativeImageGalleryAdapterV2
+                galleryAdapter.updateConfig(
+                    serverUrl = serverUrl,
+                    token = token,
+                    loading = loading,
+                    error = error,
+                    search = search,
+                    mediaFilters = mediaFilters,
+                    statusFilters = statusFilters,
+                    selectedMediaType = selectedMediaType,
+                    selectedStatus = selectedStatus,
+                    viewMode = viewMode,
+                    columns = columns,
+                    tilePx = tilePx,
+                    interactionsEnabled = interactionsEnabled,
+                    playlist = playlist,
+                    onSearchChange = onSearchChange,
+                    onMediaSelected = onMediaSelected,
+                    onStatusSelected = onStatusSelected,
+                    onOpenFilters = onOpenFilters,
+                    onViewModeSelected = onViewModeSelected,
+                    onMenu = onMenu,
+                    onRefresh = onRefresh,
+                    onRetry = onRetry
+                )
+                galleryAdapter.submitItems(items)
+                onRecycler(recyclerView)
+            }
+        )
+    }
+
+    private inner class NativeImageGalleryAdapterV2(
+        private var serverUrl: String,
+        private var token: String,
+        private var loading: Boolean,
+        private var error: String?,
+        private var search: String,
+        private var mediaFilters: List<FilterOption>,
+        private var statusFilters: List<FilterOption>,
+        private var selectedMediaType: String,
+        private var selectedStatus: String,
+        private var viewMode: LibraryViewMode,
+        private var columns: Int,
+        private var tilePx: Int,
+        private var interactionsEnabled: Boolean,
+        private var playlist: List<MediaItem>,
+        private var onSearchChange: (String) -> Unit,
+        private var onMediaSelected: (String) -> Unit,
+        private var onStatusSelected: (String) -> Unit,
+        private var onOpenFilters: () -> Unit,
+        private var onViewModeSelected: (LibraryViewMode) -> Unit,
+        private var onMenu: () -> Unit,
+        private var onRefresh: () -> Unit,
+        private var onRetry: () -> Unit
+    ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        private val viewTypeHeader = 1
+        private val viewTypeSearch = 2
+        private val viewTypeError = 3
+        private val viewTypeLoading = 4
+        private val viewTypeEmpty = 5
+        private val viewTypeTile = 6
+        private val fixedHeaderCount = 4
+        private var items: List<MediaItem> = emptyList()
+        private var itemIds: IntArray = IntArray(0)
+        var networkAllowed: Boolean = true
+
+        init {
+            setHasStableIds(true)
+        }
+
+        inner class ComposeHolder(val composeView: ComposeView) : RecyclerView.ViewHolder(composeView)
+
+        inner class TileHolder(root: FrameLayout) : RecyclerView.ViewHolder(root) {
+            val imageView: ImageView = ImageView(root.context)
+            val favoriteBadge: TextView = TextView(root.context)
+            val missingBadge: TextView = TextView(root.context)
+            var disposable: Disposable? = null
+
+            init {
+                root.setBackgroundColor(android.graphics.Color.rgb(18, 24, 34))
+                imageView.scaleType = ImageView.ScaleType.CENTER_CROP
+                root.addView(
+                    imageView,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+
+                favoriteBadge.text = "*"
+                favoriteBadge.setTextColor(android.graphics.Color.rgb(246, 196, 107))
+                favoriteBadge.textSize = 13f
+                favoriteBadge.gravity = Gravity.CENTER
+                favoriteBadge.setBackgroundColor(android.graphics.Color.argb(132, 0, 0, 0))
+                val favoriteParams = FrameLayout.LayoutParams(dpView(root, 20), dpView(root, 20), Gravity.TOP or Gravity.END)
+                favoriteParams.setMargins(0, dpView(root, 3), dpView(root, 3), 0)
+                root.addView(favoriteBadge, favoriteParams)
+
+                missingBadge.text = "MISS"
+                missingBadge.setTextColor(android.graphics.Color.WHITE)
+                missingBadge.textSize = 10f
+                missingBadge.gravity = Gravity.CENTER
+                missingBadge.setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
+                missingBadge.setBackgroundColor(android.graphics.Color.argb(204, 255, 78, 106))
+                root.addView(
+                    missingBadge,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        dpView(root, 16),
+                        Gravity.BOTTOM
+                    )
+                )
+            }
+        }
+
+        private fun hasEmptyRow(): Boolean = !loading && error == null && items.isEmpty()
+
+        private fun tileStartPosition(): Int = fixedHeaderCount + if (hasEmptyRow()) 1 else 0
+
+        fun isFullSpan(position: Int): Boolean = getItemViewType(position) != viewTypeTile
+
+        override fun getItemId(position: Int): Long {
+            return when (getItemViewType(position)) {
+                viewTypeHeader -> -1L
+                viewTypeSearch -> -2L
+                viewTypeError -> -3L
+                viewTypeLoading -> -4L
+                viewTypeEmpty -> -5L
+                else -> items.getOrNull(position - tileStartPosition())?.id?.toLong() ?: RecyclerView.NO_ID
+            }
+        }
+
+        override fun getItemViewType(position: Int): Int {
+            return when {
+                position == 0 -> viewTypeHeader
+                position == 1 -> viewTypeSearch
+                position == 2 -> viewTypeError
+                position == 3 -> viewTypeLoading
+                hasEmptyRow() && position == fixedHeaderCount -> viewTypeEmpty
+                else -> viewTypeTile
+            }
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            return if (viewType == viewTypeTile) {
+                val root = FrameLayout(parent.context)
+                root.layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    tilePx.coerceAtLeast(1)
+                )
+                TileHolder(root)
+            } else {
+                val composeView = ComposeView(parent.context)
+                composeView.setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+                composeView.layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                ComposeHolder(composeView)
+            }
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            bind(holder, position)
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+            bind(holder, position)
+        }
+
+        override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+            if (holder is TileHolder) {
+                holder.disposable?.dispose()
+                holder.disposable = null
+                holder.imageView.setImageDrawable(null)
+            }
+            super.onViewRecycled(holder)
+        }
+
+        override fun getItemCount(): Int = tileStartPosition() + items.size
+
+        fun updateConfig(
+            serverUrl: String,
+            token: String,
+            loading: Boolean,
+            error: String?,
+            search: String,
+            mediaFilters: List<FilterOption>,
+            statusFilters: List<FilterOption>,
+            selectedMediaType: String,
+            selectedStatus: String,
+            viewMode: LibraryViewMode,
+            columns: Int,
+            tilePx: Int,
+            interactionsEnabled: Boolean,
+            playlist: List<MediaItem>,
+            onSearchChange: (String) -> Unit,
+            onMediaSelected: (String) -> Unit,
+            onStatusSelected: (String) -> Unit,
+            onOpenFilters: () -> Unit,
+            onViewModeSelected: (LibraryViewMode) -> Unit,
+            onMenu: () -> Unit,
+            onRefresh: () -> Unit,
+            onRetry: () -> Unit
+        ) {
+            val sizeChanged = this.tilePx != tilePx || this.columns != columns
+            this.serverUrl = serverUrl
+            this.token = token
+            this.loading = loading
+            this.error = error
+            this.search = search
+            this.mediaFilters = mediaFilters
+            this.statusFilters = statusFilters
+            this.selectedMediaType = selectedMediaType
+            this.selectedStatus = selectedStatus
+            this.viewMode = viewMode
+            this.columns = columns
+            this.tilePx = tilePx
+            this.interactionsEnabled = interactionsEnabled
+            this.playlist = playlist
+            this.onSearchChange = onSearchChange
+            this.onMediaSelected = onMediaSelected
+            this.onStatusSelected = onStatusSelected
+            this.onOpenFilters = onOpenFilters
+            this.onViewModeSelected = onViewModeSelected
+            this.onMenu = onMenu
+            this.onRefresh = onRefresh
+            this.onRetry = onRetry
+            notifyDataSetChanged()
+        }
+
+        fun submitItems(nextItems: List<MediaItem>) {
+            val nextIds = IntArray(nextItems.size) { nextItems[it].id }
+            if (nextIds.contentEquals(itemIds) && nextItems.size == items.size) {
+                items = nextItems
+                return
+            }
+            items = nextItems
+            itemIds = nextIds
+            notifyDataSetChanged()
+        }
+
+        private fun bind(holder: RecyclerView.ViewHolder, position: Int) {
+            when (getItemViewType(position)) {
+                viewTypeHeader -> bindHeader(holder as ComposeHolder)
+                viewTypeSearch -> bindSearch(holder as ComposeHolder)
+                viewTypeError -> bindError(holder as ComposeHolder)
+                viewTypeLoading -> bindLoading(holder as ComposeHolder)
+                viewTypeEmpty -> bindEmpty(holder as ComposeHolder)
+                viewTypeTile -> bindTile(holder as TileHolder, position - tileStartPosition())
+            }
+        }
+
+        private fun bindHeader(holder: ComposeHolder) {
+            holder.composeView.setContent {
+                MaterialTheme(colorScheme = scheme) {
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                        LibraryHeaderV2(
+                            loading = loading,
+                            viewMode = viewMode,
+                            galleryMode = true,
+                            onViewModeSelected = onViewModeSelected,
+                            onMenu = onMenu,
+                            onRefresh = onRefresh
+                        )
+                    }
+                }
+            }
+        }
+
+        private fun bindSearch(holder: ComposeHolder) {
+            holder.composeView.setContent {
+                MaterialTheme(colorScheme = scheme) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        SearchAndFilterPanelV2(
+                            search = search,
+                            onSearchChange = onSearchChange,
+                            filters = mediaFilters,
+                            selectedValue = selectedMediaType,
+                            onSelected = onMediaSelected,
+                            statusFilters = statusFilters,
+                            selectedStatusValue = selectedStatus,
+                            onStatusSelected = onStatusSelected,
+                            onOpenFilters = onOpenFilters
+                        )
+                    }
+                }
+            }
+        }
+
+        private fun bindError(holder: ComposeHolder) {
+            holder.composeView.setContent {
+                MaterialTheme(colorScheme = scheme) {
+                    if (error != null) {
+                        Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                            ErrorPanelV2(error = error ?: "", loading = loading, onRetry = onRetry)
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun bindLoading(holder: ComposeHolder) {
+            holder.composeView.setContent {
+                MaterialTheme(colorScheme = scheme) {
+                    if (loading) {
+                        Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                            LoadingLineV2()
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun bindEmpty(holder: ComposeHolder) {
+            holder.composeView.setContent {
+                MaterialTheme(colorScheme = scheme) {
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        EmptyStateV2()
+                    }
+                }
+            }
+        }
+
+        private fun bindTile(holder: TileHolder, itemPosition: Int) {
+            val item = items.getOrNull(itemPosition) ?: return
+            val root = holder.itemView as FrameLayout
+            val lp = root.layoutParams as? RecyclerView.LayoutParams
+            if (lp != null && lp.height != tilePx) {
+                lp.height = tilePx.coerceAtLeast(1)
+                root.layoutParams = lp
+            }
+            val placeholder = imageGalleryPlaceholderColor(coverUrl(serverUrl, token, item) ?: item.title)
+            root.setBackgroundColor(placeholder.toArgbInt())
+            holder.favoriteBadge.visibility = if (item.favorite) View.VISIBLE else View.GONE
+            holder.missingBadge.visibility = if (item.missing) View.VISIBLE else View.GONE
+            holder.itemView.isEnabled = interactionsEnabled
+            holder.itemView.setOnClickListener {
+                if (interactionsEnabled) openItem(item, serverUrl, token, false, playlist)
+            }
+
+            holder.disposable?.dispose()
+            holder.imageView.setImageDrawable(null)
+            val url = coverUrl(serverUrl, token, item)
+            if (url.isNullOrBlank()) return
+            val decodePx = imageGalleryDecodeBucketPx(tilePx, columns)
+            val key = coverCacheKey(url, decodePx, decodePx)
+            holder.disposable = holder.imageView.load(url, imageLoader = coverImageLoader) {
+                size(decodePx, decodePx)
+                scale(Scale.FILL)
+                precision(Precision.INEXACT)
+                memoryCacheKey(key)
+                diskCacheKey(key)
+                memoryCachePolicy(CachePolicy.ENABLED)
+                diskCachePolicy(CachePolicy.ENABLED)
+                networkCachePolicy(if (networkAllowed) CachePolicy.ENABLED else CachePolicy.DISABLED)
+                crossfade(false)
+            }
+        }
+    }
+
+    private fun dpView(view: View, value: Int): Int {
+        return (value * view.resources.displayMetrics.density).roundToInt()
+    }
+
+    private fun Color.toArgbInt(): Int {
+        return android.graphics.Color.argb(
+            (alpha * 255).roundToInt().coerceIn(0, 255),
+            (red * 255).roundToInt().coerceIn(0, 255),
+            (green * 255).roundToInt().coerceIn(0, 255),
+            (blue * 255).roundToInt().coerceIn(0, 255)
+        )
+    }
+
+    @Composable
     private fun ImageGalleryTileV2(
         coverUrl: String?,
         label: String,
@@ -4469,9 +4943,12 @@ class MainActivity : ComponentActivity() {
             with(density) { tileDp.dp.toPx().roundToInt() }
         }
         val decodePx = remember(targetPx, columns) { imageGalleryDecodeBucketPx(targetPx, columns) }
+        val placeholderColor = remember(url, label) {
+            imageGalleryPlaceholderColor(url ?: label)
+        }
 
         Box(
-            modifier = modifier.background(Color(0xFF101623)),
+            modifier = modifier.background(placeholderColor),
             contentAlignment = Alignment.Center
         ) {
             CoilCoverImage(
@@ -5250,18 +5727,31 @@ class MainActivity : ComponentActivity() {
 
     private fun imageGalleryDecodeBucketPx(tilePx: Int, columns: Int): Int {
         val targetPx = when {
-            columns >= 7 -> tilePx.coerceAtMost(128)
-            columns == 6 -> tilePx.coerceAtMost(160)
-            columns == 5 -> tilePx.coerceAtMost(180)
-            columns == 4 -> tilePx.coerceAtMost(220)
+            columns >= 7 -> tilePx.coerceAtMost(96)
+            columns == 6 -> tilePx.coerceAtMost(128)
+            columns == 5 -> tilePx.coerceAtMost(160)
+            columns == 4 -> tilePx.coerceAtMost(180)
             else -> tilePx.coerceAtMost(320)
         }
         return coverDecodeBucketPx(targetPx)
     }
 
+    private fun imageGalleryPlaceholderColor(seed: String): Color {
+        val hash = seed.hashCode()
+        val r = 28 + (hash and 0x17)
+        val g = 36 + ((hash ushr 5) and 0x1F)
+        val b = 48 + ((hash ushr 11) and 0x27)
+        return Color(r, g, b)
+    }
+
     private fun coverCacheKey(url: String, reqWidth: Int, reqHeight: Int): String {
         val stableUrl = url.substringBefore("?")
         return "$stableUrl#${coverDecodeBucketPx(reqWidth)}x${coverDecodeBucketPx(reqHeight)}"
+    }
+
+    private fun coverImageMemoryCached(url: String, reqWidth: Int, reqHeight: Int): Boolean {
+        val key = MemoryCache.Key(coverCacheKey(url, reqWidth, reqHeight))
+        return coverImageLoader.memoryCache?.get(key) != null
     }
 
     private fun coverImageRequest(
@@ -5288,6 +5778,10 @@ class MainActivity : ComponentActivity() {
             builder.crossfade(crossfadeMillis)
         }
         return builder.build()
+    }
+
+    private fun logImageGalleryPerf(message: String) {
+        Log.d(imageGalleryPerfLogTag, message)
     }
 
     private fun greetingText(): String {
