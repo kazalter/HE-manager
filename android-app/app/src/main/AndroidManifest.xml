@@ -7,7 +7,12 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
         <activity android:name=".MangaActivity" android:screenOrientation="sensorPortrait" />
-        <activity android:name=".PlayerActivity" android:configChanges="orientation|screenSize" />
+        <activity
+            android:name=".player.PlayerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|navigation|uiMode"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:launchMode="singleTask" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

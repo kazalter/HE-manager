@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Book, ChevronLeft, ChevronRight, Film, Globe2, Home, Image as ImageIcon, LogOut, Settings as SettingsIcon, Star, Users } from 'lucide-vue-next'
+import { Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Home, Image as ImageIcon, LogOut, Settings as SettingsIcon, Star, Users, RefreshCw } from 'lucide-vue-next'
 import type { User } from '../types'
 
 const props = defineProps<{
@@ -17,6 +17,15 @@ const activeLinkClass = 'bg-white/10 text-white shadow-inner border border-white
 const bottomLinkClass = 'flex items-center gap-4 px-3 py-3 rounded-xl transition-all hover:bg-white/5 group text-white/60 hover:text-white'
 const isHomeActive = computed(() => route.path === '/' && route.query.favorite !== 'true')
 const isFavoriteActive = computed(() => route.path === '/' && route.query.favorite === 'true')
+
+const isRefreshing = ref(false)
+const refreshApp = () => {
+  if (isRefreshing.value) return
+  isRefreshing.value = true
+  setTimeout(() => {
+    window.location.reload()
+  }, 400)
+}
 
 const toggle = () => {
   emit('update:collapsed', !props.collapsed)
@@ -41,9 +50,19 @@ const toggle = () => {
       <div class="shrink-0 w-8 h-8 rounded-lg bg-accent shadow-lg shadow-accent/20 flex items-center justify-center overflow-hidden">
         <span class="text-sm font-black text-white">HE</span>
       </div>
-      <h1 v-if="!collapsed" class="text-xl font-black tracking-tight text-white transition-opacity duration-300">
-        HE Manager
-      </h1>
+      
+      <div v-if="!collapsed" class="flex items-center gap-2.5 flex-1 min-w-0">
+        <h1 class="text-xl font-black tracking-tight text-white truncate transition-opacity duration-300">
+          HE Manager
+        </h1>
+        <button 
+          @click="refreshApp" 
+          class="text-white/30 hover:text-accent hover:bg-accent/15 p-2 rounded-full transition-all group shrink-0 flex items-center justify-center"
+          title="刷新页面"
+        >
+          <RefreshCw :size="17" :stroke-width="2.5" :class="{ 'animate-spin': isRefreshing }" class="group-hover:rotate-180 transition-transform duration-500" />
+        </button>
+      </div>
     </div>
 
     <nav class="flex-1 space-y-2 overflow-x-hidden">
@@ -75,6 +94,11 @@ const toggle = () => {
       <router-link to="/external" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="外部收藏">
         <Globe2 :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">外部收藏</span>
+      </router-link>
+
+      <router-link to="/dedup" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="重复管理">
+        <CopyMinus :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
+        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">重复管理</span>
       </router-link>
     </nav>
 

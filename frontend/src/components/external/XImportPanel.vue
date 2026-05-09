@@ -5,8 +5,10 @@ import {
   AlertTriangle,
   AtSign,
   CheckCircle2,
+  Cloud,
   ExternalLink,
   FolderOpen,
+  Key,
   Pause,
   Play,
   PlayCircle,
@@ -19,6 +21,7 @@ import { xImportStore } from '../../stores/xImportStore'
 import type { XPost } from '../../types'
 
 const downloadRootPath = ref('')
+const cookieString = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 const uploading = ref(false)
 const uploadResult = ref<{ parsed: number; new_posts: number; existing_posts: number } | null>(null)
@@ -33,6 +36,28 @@ const errorMessage = xImportStore.errorMessage
 const isPaused = xImportStore.isPaused
 const postProgress = xImportStore.postProgressPercent
 const mediaProgress = xImportStore.mediaProgressPercent
+const syncJob = xImportStore.syncJob
+const syncInProgress = xImportStore.syncInProgress
+
+const syncStatusLabel = computed(() => {
+  if (!syncJob.value) return ''
+  const map: Record<string, string> = {
+    queued: '排队中',
+    running: '同步中',
+    completed: '已完成',
+    failed: '失败',
+    canceled: '已取消',
+  }
+  return map[syncJob.value.status] || syncJob.value.status
+})
+
+const onStartSync = async () => {
+  try {
+    await xImportStore.startSync()
+  } catch (err) {
+    console.error('Failed to start X sync:', err)
+  }
+}
 
 const statusLabel = computed(() => {
   if (!job.value) return ''
@@ -104,6 +129,34 @@ const saveDownloadRoot = async () => {
   }
 }
 
+const saveCookie = async () => {
+  let trimmed = cookieString.value.trim()
+  if (!trimmed && !source.value?.cookie_saved) {
+    xImportStore.setError('请填写 Cookie')
+    return
+  }
+  
+  // Try to parse JSON format (e.g. from extensions)
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const arr = JSON.parse(trimmed)
+      if (Array.isArray(arr)) {
+        trimmed = arr.map(c => `${c.name}=${c.value}`).join('; ') + ';'
+      }
+    } catch {
+      // Fallback to raw string if JSON parsing fails
+    }
+  }
+
+  try {
+    await xImportStore.updateSource({ cookie: trimmed })
+    xImportStore.clearError()
+    cookieString.value = '' // Clear input after successful save
+  } catch (err: any) {
+    xImportStore.setError(err.response?.data?.detail || '保存 Cookie 失败')
+  }
+}
+
 const onStart = async () => {
   if (!source.value) return
   if (!source.value.download_root_path) {
@@ -111,7 +164,7 @@ const onStart = async () => {
     if (!source.value.download_root_path) return
   }
   try {
-    await xImportStore.startImport(false)
+    await xImportStore.startImport()
   } catch (err) {
     console.error('Failed to start X import:', err)
   }
@@ -120,9 +173,18 @@ const onStart = async () => {
 const onRetryFailed = async () => {
   if (!source.value) return
   try {
-    await xImportStore.startImport(true)
+    await xImportStore.startImport({ retryFailedOnly: true })
   } catch (err) {
     console.error('Failed to retry failed posts:', err)
+  }
+}
+
+const onRetrySkipped = async () => {
+  if (!source.value) return
+  try {
+    await xImportStore.startImport({ retrySkippedOnly: true })
+  } catch (err) {
+    console.error('Failed to retry skipped posts:', err)
   }
 }
 
@@ -221,6 +283,78 @@ onUnmounted(() => {
         </label>
 
         <label class="block space-y-2">
+          <span class="text-xs font-bold text-white/65 flex items-center justify-between">
+            <span>账号登录凭证 (Cookie) <span class="text-white/30 font-normal ml-1">(可选)</span></span>
+            <span v-if="source?.cookie_saved" class="text-emerald-400 text-[10px] bg-emerald-400/10 px-1.5 py-0.5 rounded">已保存</span>
+          </span>
+          <div class="flex gap-2">
+            <input
+              v-model="cookieString"
+              type="password"
+              placeholder="粘贴 auth_token=...; ct0=...;"
+              class="flex-1 bg-black/20 border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-accent/50"
+            />
+            <button
+              @click="saveCookie"
+              class="h-12 px-3 rounded-xl bg-white/5 border border-white/10 text-white/70 hover:text-white text-xs font-bold flex items-center gap-1.5"
+              title="保存"
+            >
+              <Key :size="14" /> 保存
+            </button>
+          </div>
+          <p class="text-[11px] text-white/35">
+            提供网页端 Cookie 以解除官方 API 对成人内容的访问限制。
+          </p>
+        </label>
+
+        <div class="rounded-xl border border-white/10 bg-black/15 p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-white/70">
+              <Cloud :size="14" class="text-accent" />
+              <span class="text-xs font-bold">直接同步收藏</span>
+              <span class="text-[10px] text-white/35">无需归档</span>
+            </div>
+            <button
+              v-if="syncJob && syncInProgress"
+              @click="xImportStore.cancelSync()"
+              :disabled="syncJob?.cancel_requested"
+              class="text-[11px] text-red-300/80 hover:text-red-200 disabled:opacity-50"
+            >
+              取消
+            </button>
+          </div>
+          <button
+            @click="onStartSync"
+            :disabled="syncInProgress || !source?.cookie_saved"
+            class="w-full h-10 rounded-lg bg-accent/15 border border-accent/25 text-accent hover:bg-accent/20 hover:text-white text-xs font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            :title="!source?.cookie_saved ? '需要先保存 cookie' : '通过 GraphQL 接口直接拉取最新喜欢列表，扫到已存在的就停'"
+          >
+            <RefreshCw :size="13" :class="syncInProgress ? 'animate-spin' : ''" />
+            {{ syncInProgress ? '同步中…' : '同步最新收藏' }}
+          </button>
+          <div v-if="syncJob" class="space-y-1">
+            <div class="flex items-center justify-between text-[11px]">
+              <span class="text-white/55">{{ syncStatusLabel }}</span>
+              <span class="text-white/45 truncate ml-2">{{ syncJob.message }}</span>
+            </div>
+            <p class="text-[11px] text-white/45">
+              扫描 {{ syncJob.pages_scanned }} 页 · 见到 {{ syncJob.posts_seen }} 条 ·
+              <span class="text-emerald-300">新增 {{ syncJob.new_posts }}</span> · 已有 {{ syncJob.existing_posts }}
+            </p>
+            <button
+              v-if="!syncInProgress && ['completed','canceled','failed'].includes(syncJob.status)"
+              @click="xImportStore.dismissSyncJob()"
+              class="text-[10px] text-white/35 hover:text-white"
+            >
+              关闭报告
+            </button>
+          </div>
+          <p class="text-[10px] text-white/35 leading-relaxed">
+            从 X 网页端 GraphQL 拉取你账号的喜欢，每页 20 条，间隔 2.5 秒。扫到连续两页都是已有的就自动停。仅发现新 Post，下载请点「开始导入」。
+          </p>
+        </div>
+
+        <label class="block space-y-2">
           <span class="text-xs font-bold text-white/65">X 数据归档 (.zip)</span>
           <input ref="fileInput" type="file" accept=".zip" class="hidden" @change="onFileChange" />
           <button
@@ -306,6 +440,14 @@ onUnmounted(() => {
               class="h-12 px-4 rounded-xl bg-white/5 border border-white/10 text-white/80 font-bold flex items-center gap-2 hover:text-white hover:bg-white/10 disabled:opacity-40"
             >
               <RefreshCw :size="16" /> 重试失败 ({{ stats?.failed_posts ?? 0 }})
+            </button>
+            <button
+              @click="onRetrySkipped"
+              :disabled="inProgress || !stats?.skipped_posts"
+              class="h-12 px-4 rounded-xl bg-white/5 border border-white/10 text-white/80 font-bold flex items-center gap-2 hover:text-white hover:bg-white/10 disabled:opacity-40"
+              title="重跑早先被标记为跳过的 Post（多为成人内容，需 cookie 才能拉取）"
+            >
+              <RefreshCw :size="16" /> 重试跳过 ({{ stats?.skipped_posts ?? 0 }})
             </button>
           </div>
 

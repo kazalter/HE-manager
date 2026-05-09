@@ -48,6 +48,7 @@ public class MangaActivity extends Activity {
     private String token;
     private int id;
     private String mediaType;
+    private int[] playlistIds;
     private int page = 0;
     private int totalPages = 1;
     private int loadGeneration = 0;
@@ -56,16 +57,24 @@ public class MangaActivity extends Activity {
     private boolean restartFromBeginning = false;
     private boolean progressReady = false;
     private boolean restoringScroll = false;
-    private static final int PREFETCH_AHEAD = 6;
-    private static final int PREFETCH_BEHIND = 2;
+    private static final int MANGA_PREFETCH_AHEAD = 6;
+    private static final int MANGA_PREFETCH_BEHIND = 2;
+    private static final int IMAGE_PREFETCH_AHEAD = 2;
+    private static final int IMAGE_PREFETCH_BEHIND = 1;
+    private static final int IMAGE_PREFETCH_MAX_IN_FLIGHT = 3;
+    private static final float SCROLL_HIGH_QUALITY_ZOOM = 2.15f;
+    private static final int SCROLL_MAX_DECODE_WIDTH = 3200;
     private final Set<Integer> prefetchInFlight = new HashSet<>();
+    private final Set<AsyncTask<?, ?, ?>> prefetchTasks = new HashSet<>();
     private final Map<Integer, Object> pageDownloadLocks = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> bitmapDecodeWidths = new ConcurrentHashMap<>();
     private LruCache<Integer, Bitmap> bitmapCache;
 
     private FrameLayout root;
     private ViewPager2 pager;
     private WebtoonZoomLayout zoomLayout;
     private RecyclerView continuousRecycler;
+    private ContinuousAdapter continuousAdapter;
     private TextView pageIndicator;
     private TextView settingsButton;
     private LinearLayout modePanel;
@@ -112,12 +121,18 @@ public class MangaActivity extends Activity {
             protected int sizeOf(Integer key, Bitmap value) {
                 return value == null ? 0 : value.getByteCount();
             }
+
+            @Override
+            protected void entryRemoved(boolean evicted, Integer key, Bitmap oldValue, Bitmap newValue) {
+                if (key != null && newValue == null) bitmapDecodeWidths.remove(key);
+            }
         };
 
         serverUrl = ApiClient.trimSlash(getIntent().getStringExtra("server_url"));
         token = getIntent().getStringExtra("token");
         id = getIntent().getIntExtra("id", 0);
         mediaType = getIntent().getStringExtra("media_type");
+        playlistIds = getIntent().getIntArrayExtra("playlist_ids");
         setTitle(getIntent().getStringExtra("title"));
         readingMode = getSharedPreferences("he_manager", MODE_PRIVATE).getInt(PREF_READING_MODE, MODE_PAGE);
         page = Math.max(0, getIntent().getIntExtra("progress", 0));
@@ -180,6 +195,11 @@ public class MangaActivity extends Activity {
         zoomLayout.setOnSingleTapListener(() -> {
             updatePageFromScroll();
             showControls();
+        });
+        zoomLayout.setOnZoomSettledListener(scale -> {
+            if (readingMode == MODE_SCROLL && scale >= SCROLL_HIGH_QUALITY_ZOOM) {
+                refreshVisibleContinuousPagesForZoom();
+            }
         });
         zoomLayout.addView(continuousRecycler, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -273,6 +293,18 @@ public class MangaActivity extends Activity {
     private void loadPageCount() {
         if (!"manga".equals(mediaType)) {
             totalPages = 1;
+            if (playlistIds != null && playlistIds.length > 0) {
+                totalPages = playlistIds.length;
+                for (int i = 0; i < playlistIds.length; i++) {
+                    if (playlistIds[i] == id) {
+                        page = i;
+                        break;
+                    }
+                }
+            }
+            if (pager != null && pager.getAdapter() != null) {
+                pager.getAdapter().notifyDataSetChanged();
+            }
             renderReadingMode();
             return;
         }
@@ -322,9 +354,14 @@ public class MangaActivity extends Activity {
     }
 
     private String pageUrl(int pageIndex, boolean trackProgress) {
-        String path = "manga".equals(mediaType)
-                ? "/mobile/manga/" + id + "/page/" + pageIndex
-                : "/mobile/stream/" + id;
+        String path;
+        if ("manga".equals(mediaType)) {
+            path = "/mobile/manga/" + id + "/page/" + pageIndex;
+        } else {
+            int targetId = (playlistIds != null && playlistIds.length > 0 && pageIndex >= 0 && pageIndex < playlistIds.length) 
+                    ? playlistIds[pageIndex] : id;
+            path = "/mobile/stream/" + targetId;
+        }
         String url = serverUrl + path + "?" + ApiClient.tokenQuery(token);
         if ("manga".equals(mediaType) && trackProgress) {
             url += "&track_progress=true";
@@ -337,7 +374,14 @@ public class MangaActivity extends Activity {
         if (!dir.exists() && !dir.mkdirs()) {
             throw new RuntimeException("Cannot create image cache");
         }
-        String key = "media_" + id + "_page_" + pageIndex + ".img";
+        String key;
+        if ("manga".equals(mediaType)) {
+            key = "media_" + id + "_page_" + pageIndex + ".img";
+        } else {
+            int targetId = (playlistIds != null && playlistIds.length > 0 && pageIndex >= 0 && pageIndex < playlistIds.length) 
+                    ? playlistIds[pageIndex] : id;
+            key = "media_" + targetId + "_image.img";
+        }
         File file = new File(dir, key);
         if (file.exists() && file.length() > 0) return file;
 
@@ -396,6 +440,7 @@ public class MangaActivity extends Activity {
         } else {
             zoomLayout.setVisibility(View.GONE);
             pager.setVisibility(View.VISIBLE);
+            pager.setOrientation(ViewPager2.ORIENTATION_HORIZONTAL);
             pager.setCurrentItem(page, false);
         }
         prefetchPagesAround(page);
@@ -420,7 +465,8 @@ public class MangaActivity extends Activity {
     private void loadContinuousPages() {
         loadGeneration++;
         zoomLayout.resetZoom(false);
-        continuousRecycler.setAdapter(new ContinuousAdapter());
+        continuousAdapter = new ContinuousAdapter();
+        continuousRecycler.setAdapter(continuousAdapter);
         final int targetPage = Math.max(0, Math.min(page, Math.max(0, totalPages - 1)));
         restoringScroll = true;
         continuousRecycler.post(() -> {
@@ -457,6 +503,26 @@ public class MangaActivity extends Activity {
         if (nextPage != page) {
             page = nextPage;
             saveProgressToServer(false);
+        }
+    }
+
+    private void refreshVisibleContinuousPagesForZoom() {
+        if (continuousRecycler == null || continuousAdapter == null || readingMode != MODE_SCROLL) return;
+        LinearLayoutManager lm = (LinearLayoutManager) continuousRecycler.getLayoutManager();
+        if (lm == null) return;
+        int first = lm.findFirstVisibleItemPosition();
+        int last = lm.findLastVisibleItemPosition();
+        if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) return;
+        first = Math.max(0, first - 1);
+        last = Math.min(totalPages - 1, last + 1);
+        int viewportWidth = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        int desiredWidth = targetScrollDecodeWidth(viewportWidth, zoomLayout == null ? 1f : zoomLayout.getCurrentScale());
+        for (int i = first; i <= last; i++) {
+            Integer cachedWidth = bitmapDecodeWidths.get(i);
+            if (cachedWidth == null || cachedWidth < desiredWidth * 0.90f) {
+                continuousAdapter.notifyItemRangeChanged(first, last - first + 1, "zoom-quality");
+                return;
+            }
         }
     }
 
@@ -575,6 +641,15 @@ public class MangaActivity extends Activity {
         }
         if (settingsButton != null) settingsButton.animate().cancel();
         if (modePanel != null) modePanel.animate().cancel();
+        synchronized (prefetchTasks) {
+            for (AsyncTask<?, ?, ?> task : prefetchTasks) {
+                task.cancel(true);
+            }
+            prefetchTasks.clear();
+        }
+        synchronized (prefetchInFlight) {
+            prefetchInFlight.clear();
+        }
         super.onDestroy();
     }
 
@@ -597,13 +672,21 @@ public class MangaActivity extends Activity {
     }
 
     private String pageHeightKey(int pageIndex) {
-        return "page_height_" + id + "_" + pageIndex;
+        if ("manga".equals(mediaType)) {
+            return "page_height_" + id + "_" + pageIndex;
+        } else {
+            int targetId = (playlistIds != null && playlistIds.length > 0 && pageIndex >= 0 && pageIndex < playlistIds.length) 
+                    ? playlistIds[pageIndex] : id;
+            return "page_height_image_" + targetId;
+        }
     }
 
     private void prefetchPagesAround(int center) {
-        if (!"manga".equals(mediaType) || totalPages <= 1) return;
-        int from = Math.max(0, center - PREFETCH_BEHIND);
-        int to = Math.min(totalPages - 1, center + PREFETCH_AHEAD);
+        if (totalPages <= 1) return;
+        int ahead = "manga".equals(mediaType) ? MANGA_PREFETCH_AHEAD : IMAGE_PREFETCH_AHEAD;
+        int behind = "manga".equals(mediaType) ? MANGA_PREFETCH_BEHIND : IMAGE_PREFETCH_BEHIND;
+        int from = Math.max(0, center - behind);
+        int to = Math.min(totalPages - 1, center + ahead);
         for (int p = center; p <= to; p++) prefetchPage(p);
         for (int p = center - 1; p >= from; p--) prefetchPage(p);
     }
@@ -612,19 +695,26 @@ public class MangaActivity extends Activity {
         if (pageIndex < 0 || pageIndex >= totalPages) return;
         if (bitmapCache != null && bitmapCache.get(pageIndex) != null) return;
         synchronized (prefetchInFlight) {
-            if (!prefetchInFlight.add(pageIndex)) return;
+            if (prefetchInFlight.contains(pageIndex)) return;
+            if (!"manga".equals(mediaType) && prefetchInFlight.size() >= IMAGE_PREFETCH_MAX_IN_FLIGHT) return;
+            prefetchInFlight.add(pageIndex);
         }
         final String url = pageUrl(pageIndex, false);
-        final int reqWidth = Math.max(1, getResources().getDisplayMetrics().widthPixels);
-        new AsyncTask<Void, Void, Void>() {
+        final int viewportWidth = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final int decodeWidth = targetScrollDecodeWidth(viewportWidth, 1f);
+        AsyncTask<Void, Void, Void> task = new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... voids) {
                 try {
                     File file = cachedImageFile(url, pageIndex);
+                    if (isCancelled()) return null;
                     if (readingMode == MODE_SCROLL && bitmapCache != null
                             && bitmapCache.get(pageIndex) == null) {
-                        Bitmap bm = decodeBitmapForPage(file, reqWidth);
-                        if (bm != null) bitmapCache.put(pageIndex, bm);
+                        Bitmap bm = decodeBitmapForPage(file, decodeWidth);
+                        if (bm != null) {
+                            bitmapCache.put(pageIndex, bm);
+                            bitmapDecodeWidths.put(pageIndex, decodeWidth);
+                        }
                     }
                 } catch (Exception ignored) {}
                 return null;
@@ -632,17 +722,30 @@ public class MangaActivity extends Activity {
             @Override
             protected void onPostExecute(Void v) {
                 synchronized (prefetchInFlight) { prefetchInFlight.remove(pageIndex); }
+                synchronized (prefetchTasks) { prefetchTasks.remove(this); }
             }
-        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+            @Override
+            protected void onCancelled(Void v) {
+                synchronized (prefetchInFlight) { prefetchInFlight.remove(pageIndex); }
+                synchronized (prefetchTasks) { prefetchTasks.remove(this); }
+            }
+        };
+        synchronized (prefetchTasks) { prefetchTasks.add(task); }
+        task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
-    private Bitmap decodeBitmapForPage(File file, int reqWidth) {
+    private int targetScrollDecodeWidth(int viewportWidth, float scale) {
+        float multiplier = scale >= SCROLL_HIGH_QUALITY_ZOOM ? 3.0f : 2.0f;
+        return Math.max(1, Math.min(SCROLL_MAX_DECODE_WIDTH, Math.round(viewportWidth * multiplier)));
+    }
+
+    private Bitmap decodeBitmapForPage(File file, int targetWidth) {
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
             int sample = 1;
-            while (bounds.outWidth > 0 && bounds.outWidth / sample > reqWidth * 2) {
+            while (bounds.outWidth > 0 && bounds.outWidth / sample > targetWidth) {
                 sample *= 2;
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
@@ -702,6 +805,7 @@ public class MangaActivity extends Activity {
             prefetchPagesAround(position);
 
             final int viewportWidth = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+            final int decodeWidth = targetScrollDecodeWidth(viewportWidth, zoomLayout == null ? 1f : zoomLayout.getCurrentScale());
             int cachedHeight = getSharedPreferences("he_manager", MODE_PRIVATE)
                     .getInt(pageHeightKey(position), 0);
             int height = cachedHeight > 0 ? cachedHeight : viewportWidth;
@@ -710,28 +814,39 @@ public class MangaActivity extends Activity {
             holder.itemView.setLayoutParams(lp);
 
             Bitmap cached = bitmapCache != null ? bitmapCache.get(position) : null;
+            boolean showingCachedBitmap = false;
             if (cached != null && !cached.isRecycled()) {
                 holder.statusText.setVisibility(View.GONE);
                 holder.imageView.setVisibility(View.VISIBLE);
                 holder.imageView.setImageBitmap(cached);
                 adjustHeightForBitmap(holder, position, cached);
-                return;
+                showingCachedBitmap = true;
+                Integer cachedWidth = bitmapDecodeWidths.get(position);
+                if (cachedWidth != null && cachedWidth >= decodeWidth * 0.90f) {
+                    return;
+                }
             }
 
-            holder.imageView.setVisibility(View.GONE);
-            holder.imageView.setImageBitmap(null);
-            holder.statusText.setVisibility(View.VISIBLE);
-            holder.statusText.setText((position + 1) + " / " + totalPages);
+            if (!showingCachedBitmap) {
+                holder.imageView.setVisibility(View.GONE);
+                holder.imageView.setImageBitmap(null);
+                holder.statusText.setVisibility(View.VISIBLE);
+                holder.statusText.setText((position + 1) + " / " + totalPages);
+            }
 
             final String url = pageUrl(position, false);
+            final boolean hadCachedBitmap = showingCachedBitmap;
             new AsyncTask<Void, Void, Bitmap>() {
                 String error;
                 @Override
                 protected Bitmap doInBackground(Void... voids) {
                     try {
                         File file = cachedImageFile(url, position);
-                        Bitmap bm = decodeBitmapForPage(file, viewportWidth);
-                        if (bm != null && bitmapCache != null) bitmapCache.put(position, bm);
+                        Bitmap bm = decodeBitmapForPage(file, decodeWidth);
+                        if (bm != null && bitmapCache != null) {
+                            bitmapCache.put(position, bm);
+                            bitmapDecodeWidths.put(position, decodeWidth);
+                        }
                         return bm;
                     } catch (Exception e) {
                         error = e.getMessage();
@@ -743,7 +858,9 @@ public class MangaActivity extends Activity {
                     if (holder.bindGen != thisGen) return;
                     if (generation != loadGeneration) return;
                     if (bm == null) {
-                        holder.statusText.setText(error == null ? "加载失败" : error);
+                        if (!hadCachedBitmap) {
+                            holder.statusText.setText(error == null ? "加载失败" : error);
+                        }
                         return;
                     }
                     holder.statusText.setVisibility(View.GONE);

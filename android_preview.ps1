@@ -1,7 +1,7 @@
 param(
     [switch]$Watch,
     [switch]$NoBuild,
-    [string]$Device = "",
+    [string]$Device = "f94c0b0",
     [string]$JavaHome = "",
     [string]$MumuPort = ""
 )
@@ -112,7 +112,7 @@ function Resolve-Device($Adb) {
     if ($devices.Count -gt 1) {
         Write-Host "Multiple devices found. Using $($devices[0]). Pass -Device <id> to choose another."
     }
-    return $devices[0]
+    return @($devices)[0]
 }
 
 function Invoke-Preview {
@@ -178,8 +178,17 @@ function Watch-AndroidFiles {
     while ($true) { Start-Sleep -Seconds 1 }
 }
 
-if ($Watch) {
-    Watch-AndroidFiles
-} else {
-    Invoke-Preview
+try {
+    if ($Watch) {
+        Watch-AndroidFiles
+    } else {
+        Invoke-Preview
+    }
+} finally {
+    if (-not $NoBuild) {
+        Write-Step "Stopping Gradle Daemon to free memory..."
+        Push-Location $AndroidDir
+        & $Gradle --stop | Out-Null
+        Pop-Location
+    }
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
-import { ChevronLeft, ChevronRight, Maximize, Minimize, Plus, Star, Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Maximize, Minimize, Plus, Star, Tag as TagIcon, Trash2, X, FileQuestion, RefreshCw } from 'lucide-vue-next'
 import Artplayer from 'artplayer'
 import artplayerPluginVttThumbnail from 'artplayer-plugin-vtt-thumbnail'
 import { API_BASE_URL, STREAM_URL, THUMBNAIL_URL } from '../config'
@@ -25,6 +25,13 @@ const isFullscreen = ref(false)
 const showControls = ref(true)
 const tagInput = ref('')
 const artRef = ref<HTMLDivElement | null>(null)
+
+const isRechecking = ref(false)
+const toastMessage = ref('')
+const showToast = (msg: string) => {
+  toastMessage.value = msg
+  setTimeout(() => { toastMessage.value = '' }, 3000)
+}
 
 let controlTimer: number | undefined
 let clickTimer: number | undefined
@@ -208,6 +215,35 @@ const prevMedia = () => {
     currentMedia.value = prev
     currentPage.value = 0
     emit('navigate', prev)
+  }
+}
+
+const recheckMedia = async () => {
+  if (isRechecking.value) return
+  isRechecking.value = true
+  try {
+    const res = await axios.post(`${API_BASE_URL}/media/${currentMedia.value.id}/recheck`)
+    applyMediaPatch(res.data)
+    showToast('文件已恢复')
+  } catch (err: any) {
+    if (err.response?.status === 404) {
+      showToast('文件仍不存在')
+    } else {
+      showToast('检查失败: ' + err.message)
+    }
+  } finally {
+    isRechecking.value = false
+  }
+}
+
+const removeMissingMedia = async () => {
+  if (!confirm('确定要从媒体库中移除该记录吗？此操作不可逆。')) return
+  try {
+    await axios.delete(`${API_BASE_URL}/media/${currentMedia.value.id}`)
+    emit('close')
+    window.location.reload()
+  } catch (err: any) {
+    alert('移除失败: ' + err.message)
   }
 }
 
@@ -473,15 +509,17 @@ watch(
 
     if (newVal.media_type === 'manga') {
       totalMangaPages.value = null
-      try {
-        const res = await axios.get(`${API_BASE_URL}/manga/${newVal.id}/pages`)
-        totalMangaPages.value = res.data.total_pages
-      } catch {
-        totalMangaPages.value = null
+      if (!newVal.is_missing) {
+        try {
+          const res = await axios.get(`${API_BASE_URL}/manga/${newVal.id}/pages`)
+          totalMangaPages.value = res.data.total_pages
+        } catch {
+          totalMangaPages.value = null
+        }
       }
     }
 
-    if (newVal.media_type === 'video') {
+    if (newVal.media_type === 'video' && !newVal.is_missing) {
       await initArtplayer()
     } else {
       stopArtplayer()
@@ -596,7 +634,32 @@ onUnmounted(() => {
             </div>
           </header>
 
-          <div v-if="isVideo" class="relative flex-1 min-h-0 bg-black">
+          <div v-if="currentMedia.is_missing" class="absolute inset-0 z-[100] bg-black/85 flex flex-col items-center justify-center p-8 backdrop-blur-md">
+            <div class="bg-red-500/10 border border-red-500/20 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+              <div class="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-5 shadow-inner shadow-red-500/20">
+                <FileQuestion :size="32" class="text-red-400" />
+              </div>
+              <h3 class="text-2xl font-black text-red-400 mb-3 tracking-tight">文件丢失</h3>
+              <p class="text-[15px] text-white/60 leading-relaxed mb-8">
+                系统无法找到原文件。<br>可能是文件已被删除、移动，或所在的外部存储设备未连接。
+              </p>
+              <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                <button @click="recheckMedia" class="px-6 py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold transition-all flex items-center justify-center gap-2 flex-1 shadow-lg shadow-black/50">
+                  <RefreshCw :size="18" :class="{ 'animate-spin': isRechecking }" />
+                  重新检查
+                </button>
+                <button @click="removeMissingMedia" class="px-6 py-3 rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold transition-all flex items-center justify-center gap-2 flex-1 shadow-lg shadow-red-500/20">
+                  <Trash2 :size="18" />
+                  从媒体库移除
+                </button>
+              </div>
+            </div>
+            <div v-if="toastMessage" class="absolute bottom-10 left-1/2 -translate-x-1/2 bg-black/90 border border-white/10 text-white px-6 py-3 rounded-xl font-bold shadow-2xl transition-all">
+              {{ toastMessage }}
+            </div>
+          </div>
+
+          <div v-else-if="isVideo" class="relative flex-1 min-h-0 bg-black">
             <div ref="artRef" class="media-detail-player w-full h-full outline-none"></div>
           </div>
 

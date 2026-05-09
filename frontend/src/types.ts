@@ -17,10 +17,58 @@ export interface Media {
     progress: number;
     last_opened_at: string | null;
     source_url: string | null;
-    source_site: string | null;
     is_missing: boolean;
+    missing_since: string | null;
+    normalized_title?: string | null;
+    duplicate_status?: 'unique' | 'checking' | 'strong_duplicate' | 'suspected_duplicate' | 'weak_suspected' | string;
     created_at: string;
     tags: Tag[];
+}
+
+export type DedupLevel = 'strong_duplicate' | 'suspected_duplicate' | 'weak_suspected';
+
+export interface DedupSummary {
+    pending_pairs: number;
+    strong_duplicate: number;
+    suspected_duplicate: number;
+    weak_suspected: number;
+    checking: number;
+    queue_size: number;
+    worker_running: boolean;
+}
+
+export interface DedupMediaSummary {
+    id: number;
+    title: string;
+    absolute_path: string;
+    media_type: 'video' | 'manga' | 'image';
+    extension: string | null;
+    file_size: number | null;
+    cover_path: string | null;
+    duration: number | null;
+    width: number | null;
+    height: number | null;
+    page_count: number | null;
+    is_missing: boolean;
+    missing_since: string | null;
+    duplicate_status: string;
+    favorite: boolean;
+    rating: number;
+    source_url: string | null;
+    source_site: string | null;
+}
+
+export interface DuplicateCandidatePair {
+    id: number;
+    level: DedupLevel | string;
+    similarity: number;
+    reason: string | null;
+    status: 'pending' | 'merged' | 'kept_both' | 'ignored' | 'replaced' | string;
+    created_at: string;
+    resolved_at: string | null;
+    resolution_note: string | null;
+    existing: DedupMediaSummary;
+    candidate: DedupMediaSummary;
 }
 
 export interface Tag {
@@ -111,6 +159,7 @@ export interface XImportSource {
     last_archive_name: string | null;
     last_archive_imported_at: string | null;
     last_sync_at: string | null;
+    cookie_saved: boolean;
 }
 
 export interface XImportStats {
@@ -136,6 +185,21 @@ export interface XImportJobError {
     tweet_id: string;
     message: string;
     at: string;
+}
+
+export interface XSyncJob {
+    job_id: string;
+    source_id: number;
+    status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled' | string;
+    message: string;
+    started_at: string | null;
+    finished_at: string | null;
+    pages_scanned: number;
+    posts_seen: number;
+    new_posts: number;
+    existing_posts: number;
+    cancel_requested: boolean;
+    stop_reason: string | null;
 }
 
 export interface XImportJob {

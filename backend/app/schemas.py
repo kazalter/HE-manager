@@ -70,8 +70,11 @@ class MediaBase(BaseModel):
     source_url: Optional[str] = None
     source_site: Optional[str] = None
     is_missing: bool = False
+    missing_since: Optional[datetime] = None
     cover_time_ms: Optional[int] = None
     cover_source: Optional[str] = None
+    normalized_title: Optional[str] = None
+    duplicate_status: str = "unique"
     created_at: datetime
 
 class Media(MediaBase):
@@ -200,6 +203,7 @@ class XImportSource(BaseModel):
     last_archive_name: Optional[str] = None
     last_archive_imported_at: Optional[datetime] = None
     last_sync_at: Optional[datetime] = None
+    cookie_saved: bool = False
 
     class Config:
         from_attributes = True
@@ -208,6 +212,7 @@ class XImportSource(BaseModel):
 class XImportSourceUpdate(BaseModel):
     name: Optional[str] = None
     download_root_path: Optional[str] = None
+    cookie: Optional[str] = None
 
 
 class XImportStats(BaseModel):
@@ -232,6 +237,22 @@ class XImportArchiveUploadResponse(BaseModel):
 class XImportStartRequest(BaseModel):
     source_id: int
     retry_failed_only: bool = False
+    retry_skipped_only: bool = False
+
+
+class XSyncJob(BaseModel):
+    job_id: str
+    source_id: int
+    status: str
+    message: str = ""
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    pages_scanned: int = 0
+    posts_seen: int = 0
+    new_posts: int = 0
+    existing_posts: int = 0
+    cancel_requested: bool = False
+    stop_reason: Optional[str] = None
 
 
 class XImportJobError(BaseModel):
@@ -263,6 +284,64 @@ class XImportJob(BaseModel):
     pause_requested: bool = False
     cancel_requested: bool = False
     errors: List[XImportJobError] = []
+
+
+# --- local-file deduplication ---
+
+class DedupSummary(BaseModel):
+    pending_pairs: int = 0
+    strong_duplicate: int = 0
+    suspected_duplicate: int = 0
+    weak_suspected: int = 0
+    checking: int = 0
+    queue_size: int = 0
+    worker_running: bool = False
+
+
+class DedupMediaSummary(BaseModel):
+    id: int
+    title: str
+    absolute_path: str
+    media_type: str
+    extension: Optional[str] = None
+    file_size: Optional[int] = None
+    cover_path: Optional[str] = None
+    duration: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    page_count: Optional[int] = None
+    is_missing: bool = False
+    missing_since: Optional[datetime] = None
+    duplicate_status: str = "unique"
+    favorite: bool = False
+    rating: int = 0
+    source_url: Optional[str] = None
+    source_site: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DuplicateCandidatePair(BaseModel):
+    id: int
+    level: str
+    similarity: int
+    reason: Optional[str] = None
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    resolution_note: Optional[str] = None
+    existing: DedupMediaSummary
+    candidate: DedupMediaSummary
+
+
+class DedupActionRequest(BaseModel):
+    action: str = Field(description="keep_existing | replace_path | keep_both | ignore")
+    note: Optional[str] = None
+
+
+class DedupDeleteFileRequest(BaseModel):
+    confirm: bool = False
 
 
 class XPost(BaseModel):

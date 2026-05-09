@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import axios from 'axios'
 import { Check, FolderOpen, FolderPlus, HardDrive, Image as ImageIcon, Palette, RefreshCw, Timer, Trash2, X } from 'lucide-vue-next'
 import { API_BASE_URL } from '../config'
-import { applyTheme, getStoredTheme, themes, type ThemeId } from '../theme'
+import { applyTheme, getStoredTheme, themes } from '../theme'
 import type { Folder } from '../types'
 
 const folders = ref<Folder[]>([])
@@ -13,7 +13,7 @@ const thumbnailEnabled = ref(true)
 const thumbnailInterval = ref(1)
 const loading = ref(false)
 const showAddModal = ref(false)
-const selectedTheme = ref<ThemeId>(getStoredTheme())
+const selectedTheme = ref<string>(getStoredTheme())
 
 const modes: Array<{ id: Folder['scan_mode']; label: string; description: string }> = [
   { id: 'auto', label: '自动', description: '自动识别视频、漫画压缩包和单张图片' },
@@ -22,7 +22,7 @@ const modes: Array<{ id: Folder['scan_mode']; label: string; description: string
   { id: 'manga', label: '漫画', description: '把包含图片的文件夹识别为一本漫画' },
 ]
 
-const selectTheme = (themeId: ThemeId) => {
+const selectTheme = (themeId: string) => {
   selectedTheme.value = themeId
   applyTheme(themeId)
 }
@@ -148,7 +148,7 @@ onMounted(fetchFolders)
           </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           <button
             v-for="theme in themes"
             :key="theme.id"
@@ -171,6 +171,36 @@ onMounted(fetchFolders)
             <p class="font-bold text-white">{{ theme.name }}</p>
             <p class="text-xs text-white/45 mt-1 leading-relaxed pr-5">{{ theme.description }}</p>
           </button>
+
+          <!-- Custom Theme Picker -->
+          <label
+            :class="selectedTheme.startsWith('#') ? 'border-accent bg-accent/10 text-white' : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10'"
+            class="relative text-left rounded-xl border p-4 transition-all min-h-[136px] block cursor-pointer"
+          >
+            <input 
+              type="color" 
+              :value="selectedTheme.startsWith('#') ? selectedTheme : '#818cf8'"
+              @input="(e) => selectTheme((e.target as HTMLInputElement).value)"
+              class="absolute opacity-0 w-0 h-0"
+              title="选择自定义颜色"
+            />
+
+            <span v-if="selectedTheme.startsWith('#')" class="absolute right-3 top-3 w-7 h-7 rounded-lg bg-accent text-white flex items-center justify-center pointer-events-none">
+              <Check :size="16" />
+            </span>
+
+            <div class="flex gap-2 mb-4 pointer-events-none">
+              <!-- Single color swatch / Rainbow -->
+              <span
+                class="w-8 h-8 rounded-lg"
+                :class="selectedTheme.startsWith('#') ? 'border border-white/15' : 'shadow-inner'"
+                :style="selectedTheme.startsWith('#') ? { backgroundColor: selectedTheme } : { background: 'linear-gradient(135deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #9400d3)' }"
+              ></span>
+            </div>
+            
+            <p class="font-bold text-white pointer-events-none">自定义颜色</p>
+            <p class="text-xs text-white/45 mt-1 leading-relaxed pr-5 pointer-events-none">选择您喜欢的色系，一键生成全局主题。</p>
+          </label>
         </div>
       </section>
 

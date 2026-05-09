@@ -48,12 +48,27 @@ class Media(Base):
     source_url = Column(String, nullable=True)
     source_site = Column(String, nullable=True)
     is_missing = Column(Boolean, default=False)
+    missing_since = Column(DateTime, nullable=True)
     cover_time_ms = Column(Integer, nullable=True)
     cover_source = Column(String, nullable=True) # e.g., 'first_valid_frame', 'fallback_10_percent', 'manual'
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Local-file dedup fields. `duplicate_status` is one of:
+    # 'unique'              — confirmed unique
+    # 'checking'            — fingerprint job pending; UI hides from main library
+    # 'strong_duplicate'    — confirmed dup of an existing entry; UI hides from main library, exposed via dedup management
+    # 'suspected_duplicate' — needs user confirmation; UI hides from main library
+    # 'weak_suspected'      — visible in library but flagged
+    normalized_title = Column(String, index=True, nullable=True)
+    duplicate_status = Column(String, index=True, default="unique")
 
     folder = relationship("Folder", back_populates="media_items")
     tags = relationship("Tag", secondary=media_tags, back_populates="media_items")
+    fingerprint = relationship(
+        "MediaFingerprint",
+        back_populates="media",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 class Tag(Base):
     __tablename__ = "tags"
@@ -145,10 +160,15 @@ class XImportSource(Base):
     last_archive_imported_at = Column(DateTime, nullable=True)
     last_sync_at = Column(DateTime, nullable=True)
     last_cursor = Column(String, nullable=True)
+    cookie = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     posts = relationship("XPost", back_populates="source", cascade="all, delete-orphan")
+
+    @property
+    def cookie_saved(self):
+        return bool(self.cookie)
 
 
 class XPost(Base):
@@ -176,6 +196,52 @@ class XPost(Base):
 
     source = relationship("XImportSource", back_populates="posts")
     media_items = relationship("XMediaItem", back_populates="post", cascade="all, delete-orphan")
+
+
+class MediaFingerprint(Base):
+    __tablename__ = "media_fingerprints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    media_id = Column(Integer, ForeignKey("media.id"), unique=True, index=True)
+    media_type = Column(String, index=True)
+    file_size = Column(Integer, nullable=True)
+    page_count = Column(Integer, nullable=True)
+    duration = Column(Integer, nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    # Sampled hashes (truncated SHA-1). Used per type:
+    #   manga / image-set: first / middle / last page
+    #   video: first / mid / end frame
+    #   single image: hash_first holds the full-file SHA-1
+    hash_first = Column(String, nullable=True)
+    hash_middle = Column(String, nullable=True)
+    hash_last = Column(String, nullable=True)
+    # Cache invalidation key. If (path, size, mtime) match, fingerprint is reused.
+    source_path = Column(String, nullable=True)
+    source_mtime = Column(Integer, nullable=True)
+    computed_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    media = relationship("Media", back_populates="fingerprint")
+
+
+class DuplicateCandidate(Base):
+    __tablename__ = "duplicate_candidates"
+    __table_args__ = (
+        UniqueConstraint("existing_media_id", "candidate_media_id", name="uq_dup_pair"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    # The "older" / kept entry; the candidate is the newly-discovered one.
+    existing_media_id = Column(Integer, ForeignKey("media.id"), index=True)
+    candidate_media_id = Column(Integer, ForeignKey("media.id"), index=True)
+    level = Column(String, index=True)  # strong_duplicate, suspected_duplicate, weak_suspected
+    similarity = Column(Integer, default=0)  # 0-100
+    reason = Column(Text, nullable=True)
+    status = Column(String, index=True, default="pending")  # pending, merged, kept_both, ignored, replaced
+    resolved_at = Column(DateTime, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class XMediaItem(Base):

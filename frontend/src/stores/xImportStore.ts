@@ -1,10 +1,12 @@
 import { computed, reactive } from 'vue'
 import axios from 'axios'
 import { API_BASE_URL } from '../config'
-import type { XImportJob, XImportSource, XImportStats } from '../types'
+import type { XImportJob, XImportSource, XImportStats, XSyncJob } from '../types'
 
 const STORAGE_KEY = 'he-manager:x-import-job'
+const SYNC_STORAGE_KEY = 'he-manager:x-sync-job'
 const POLL_INTERVAL_MS = 1500
+const SYNC_POLL_INTERVAL_MS = 1500
 
 interface PersistedJob {
   jobId: string
@@ -18,6 +20,8 @@ interface XImportStoreState {
   inProgress: boolean
   errorMessage: string
   onCompletedCallbacks: Array<(job: XImportJob) => void>
+  syncJob: XSyncJob | null
+  syncInProgress: boolean
 }
 
 const state = reactive<XImportStoreState>({
@@ -27,9 +31,12 @@ const state = reactive<XImportStoreState>({
   inProgress: false,
   errorMessage: '',
   onCompletedCallbacks: [],
+  syncJob: null,
+  syncInProgress: false,
 })
 
 let pollTimer: number | null = null
+let syncPollTimer: number | null = null
 
 const isFinalStatus = (status: string) => ['completed', 'failed', 'canceled'].includes(status)
 
@@ -113,7 +120,7 @@ const fetchSource = async (): Promise<XImportSource> => {
   return source
 }
 
-const updateSource = async (patch: { name?: string; download_root_path?: string }) => {
+const updateSource = async (patch: { name?: string; download_root_path?: string; cookie?: string }) => {
   if (!state.source) throw new Error('No X source loaded')
   const res = await axios.patch<XImportSource>(`${API_BASE_URL}/x/sources/${state.source.id}`, patch)
   state.source = res.data
@@ -147,14 +154,15 @@ const uploadArchive = async (file: File, downloadRootPath?: string) => {
   }
 }
 
-const startImport = async (retryFailedOnly = false) => {
+const startImport = async (opts: { retryFailedOnly?: boolean; retrySkippedOnly?: boolean } = {}) => {
   if (!state.source) throw new Error('No X source loaded')
   if (state.inProgress) return state.job
   state.errorMessage = ''
   try {
     const res = await axios.post<XImportJob>(`${API_BASE_URL}/x/imports`, {
       source_id: state.source.id,
-      retry_failed_only: retryFailedOnly,
+      retry_failed_only: opts.retryFailedOnly ?? false,
+      retry_skipped_only: opts.retrySkippedOnly ?? false,
     })
     state.job = res.data
     state.inProgress = true
@@ -204,6 +212,84 @@ const dismissJob = () => {
   persistJob(null, null)
 }
 
+const persistSyncJob = (jobId: string | null, sourceId: number | null) => {
+  try {
+    if (jobId && sourceId !== null) {
+      localStorage.setItem(SYNC_STORAGE_KEY, JSON.stringify({ jobId, sourceId } satisfies PersistedJob))
+    } else {
+      localStorage.removeItem(SYNC_STORAGE_KEY)
+    }
+  } catch { /* ignore */ }
+}
+
+const stopSyncPolling = () => {
+  if (syncPollTimer !== null) {
+    window.clearInterval(syncPollTimer)
+    syncPollTimer = null
+  }
+}
+
+const pollSyncOnce = async (jobId: string) => {
+  try {
+    const res = await axios.get<XSyncJob>(`${API_BASE_URL}/x/syncs/${jobId}`)
+    state.syncJob = res.data
+    state.syncInProgress = !isFinalStatus(res.data.status)
+    if (isFinalStatus(res.data.status)) {
+      stopSyncPolling()
+      persistSyncJob(null, null)
+      if (state.source) await refreshStats(state.source.id)
+    }
+  } catch (err: any) {
+    if (err.response?.status === 404) {
+      stopSyncPolling()
+      state.syncInProgress = false
+      state.syncJob = null
+      persistSyncJob(null, null)
+      return
+    }
+    state.errorMessage = err.response?.data?.detail || '读取同步进度失败'
+  }
+}
+
+const startSyncPolling = (jobId: string) => {
+  stopSyncPolling()
+  pollSyncOnce(jobId)
+  syncPollTimer = window.setInterval(() => pollSyncOnce(jobId), SYNC_POLL_INTERVAL_MS)
+}
+
+const startSync = async () => {
+  if (!state.source) throw new Error('No X source loaded')
+  if (state.syncInProgress) return state.syncJob
+  state.errorMessage = ''
+  try {
+    const res = await axios.post<XSyncJob>(`${API_BASE_URL}/x/sources/${state.source.id}/sync`)
+    state.syncJob = res.data
+    state.syncInProgress = !isFinalStatus(res.data.status)
+    persistSyncJob(res.data.job_id, res.data.source_id)
+    startSyncPolling(res.data.job_id)
+    return res.data
+  } catch (err: any) {
+    state.errorMessage = err.response?.data?.detail || '启动同步失败'
+    throw err
+  }
+}
+
+const cancelSync = async () => {
+  if (!state.syncJob) return
+  try {
+    const res = await axios.post<XSyncJob>(`${API_BASE_URL}/x/syncs/${state.syncJob.job_id}/cancel`)
+    state.syncJob = res.data
+  } catch (err: any) {
+    state.errorMessage = err.response?.data?.detail || '取消同步失败'
+  }
+}
+
+const dismissSyncJob = () => {
+  if (state.syncInProgress) return
+  state.syncJob = null
+  persistSyncJob(null, null)
+}
+
 const onCompleted = (cb: (job: XImportJob) => void) => {
   state.onCompletedCallbacks.push(cb)
   return () => {
@@ -242,12 +328,49 @@ const tryResume = async () => {
   }
 }
 
+const trySyncResume = async () => {
+  let persisted: PersistedJob | null = null
+  try {
+    const raw = localStorage.getItem(SYNC_STORAGE_KEY)
+    if (raw) persisted = JSON.parse(raw) as PersistedJob
+  } catch { /* ignore */ }
+
+  if (!persisted) {
+    if (state.source) {
+      try {
+        const res = await axios.get<XSyncJob | null>(`${API_BASE_URL}/x/sources/${state.source.id}/active-sync`)
+        if (res.data && !isFinalStatus(res.data.status)) {
+          state.syncJob = res.data
+          state.syncInProgress = true
+          persistSyncJob(res.data.job_id, res.data.source_id)
+          startSyncPolling(res.data.job_id)
+        }
+      } catch { /* ignore */ }
+    }
+    return
+  }
+  try {
+    const res = await axios.get<XSyncJob>(`${API_BASE_URL}/x/syncs/${persisted.jobId}`)
+    state.syncJob = res.data
+    if (isFinalStatus(res.data.status)) {
+      persistSyncJob(null, null)
+      state.syncInProgress = false
+    } else {
+      state.syncInProgress = true
+      startSyncPolling(persisted.jobId)
+    }
+  } catch {
+    persistSyncJob(null, null)
+  }
+}
+
 let resumed = false
 const ensureResumed = async () => {
   if (resumed) return
   resumed = true
   if (!state.source) await fetchSource()
   await tryResume()
+  await trySyncResume()
 }
 
 export const xImportStore = {
@@ -268,6 +391,8 @@ export const xImportStore = {
     const done = state.job?.media_downloaded ?? 0
     return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0
   }),
+  syncJob: computed(() => state.syncJob),
+  syncInProgress: computed(() => state.syncInProgress),
   fetchSource,
   refreshStats,
   updateSource,
@@ -277,6 +402,9 @@ export const xImportStore = {
   resumeImport,
   cancelImport,
   dismissJob,
+  startSync,
+  cancelSync,
+  dismissSyncJob,
   onCompleted,
   ensureResumed,
   clearError() { state.errorMessage = '' },

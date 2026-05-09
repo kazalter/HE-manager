@@ -50,6 +50,7 @@ class ImportJob:
     thumbnail_dir: str
     status: str = "queued"  # queued, preparing, running, paused, completed, failed, canceled
     message: str = ""
+    cookie: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     total_posts: int = 0
@@ -127,9 +128,18 @@ def _wait_if_paused(job: ImportJob) -> None:
         job.message = "继续导入"
 
 
-def select_pending_post_ids(db: Session, source_id: int, *, include_failed: bool = True, retry_failed_only: bool = False) -> List[int]:
+def select_pending_post_ids(
+    db: Session,
+    source_id: int,
+    *,
+    include_failed: bool = True,
+    retry_failed_only: bool = False,
+    retry_skipped_only: bool = False,
+) -> List[int]:
     query = db.query(models.XPost.id).filter(models.XPost.source_id == source_id)
-    if retry_failed_only:
+    if retry_skipped_only:
+        query = query.filter(models.XPost.status == "skipped")
+    elif retry_failed_only:
         query = query.filter(models.XPost.status == "failed")
     else:
         active_states = ["pending", "fetched", "downloading"]
@@ -159,7 +169,7 @@ def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Fold
     db.commit()
 
     try:
-        tweet = client.fetch_tweet(post.tweet_id)
+        tweet = client.fetch_tweet(post.tweet_id, cookie=job.cookie)
     except client.TweetUnavailable as exc:
         post.status = "skipped"
         post.error_message = str(exc)
@@ -375,6 +385,7 @@ def start_job(
     download_root: str,
     thumbnail_dir: str,
     post_ids: List[int],
+    cookie: Optional[str] = None,
 ) -> ImportJob:
     with JOB_LOCK:
         existing = JOBS.get(job_id)
@@ -385,6 +396,7 @@ def start_job(
             source_id=source_id,
             download_root=download_root,
             thumbnail_dir=thumbnail_dir,
+            cookie=cookie,
             _post_ids=list(post_ids),
         )
         JOBS[job_id] = job

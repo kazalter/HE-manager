@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import ExternalFavoritesView from '../views/ExternalFavoritesView.vue'
+import DedupView from '../views/DedupView.vue'
 import UsersView from '../views/UsersView.vue'
 
 const router = createRouter({
@@ -27,6 +28,11 @@ const router = createRouter({
       path: '/external',
       name: 'external-favorites',
       component: ExternalFavoritesView
+    },
+    {
+      path: '/dedup',
+      name: 'dedup',
+      component: DedupView
     },
     {
       path: '/users',

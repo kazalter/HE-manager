@@ -1,11 +1,12 @@
 package com.hemanager.mobile;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
-import android.view.ViewConfiguration;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.OverScroller;
@@ -15,7 +16,9 @@ import androidx.recyclerview.widget.RecyclerView;
 public class WebtoonZoomLayout extends FrameLayout {
 
     private static final float MIN_SCALE = 1.0f;
-    private static final float MAX_SCALE = 3.5f;
+    private static final float MAX_SCALE = 6.0f;
+    private static final float RESET_THRESHOLD = 1.04f;
+    private static final long ZOOM_ANIMATION_MS = 220L;
 
     private final ScaleGestureDetector scaleDetector;
     private final GestureDetector gestureDetector;
@@ -26,22 +29,29 @@ public class WebtoonZoomLayout extends FrameLayout {
     private float panX = 0f;
     private boolean isScaling = false;
     private float prevFocusX, prevFocusY;
+    private int lastBottomPadding = 0;
     private ValueAnimator zoomAnimator;
 
     private Runnable onSingleTap;
+    private OnZoomSettledListener onZoomSettledListener;
+
+    public interface OnZoomSettledListener {
+        void onZoomSettled(float scale);
+    }
 
     public WebtoonZoomLayout(Context context) {
         super(context);
-        float touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         scroller = new OverScroller(context);
 
         scaleDetector = new ScaleGestureDetector(context, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override
             public boolean onScaleBegin(ScaleGestureDetector detector) {
                 cancelZoomAnimation();
+                scroller.forceFinished(true);
                 isScaling = true;
                 prevFocusX = detector.getFocusX();
                 prevFocusY = detector.getFocusY();
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                 return true;
             }
 
@@ -55,6 +65,7 @@ public class WebtoonZoomLayout extends FrameLayout {
                 float newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, oldScale * sf));
                 float effectiveSf = newScale / oldScale;
 
+                // Keep the content under the fingers anchored while allowing two-finger panning.
                 panX = fx - (prevFocusX - panX) * effectiveSf;
 
                 if (recyclerView != null) {
@@ -73,8 +84,11 @@ public class WebtoonZoomLayout extends FrameLayout {
             @Override
             public void onScaleEnd(ScaleGestureDetector detector) {
                 isScaling = false;
-                if (currentScale < 1.05f) {
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+                if (currentScale < RESET_THRESHOLD) {
                     animateZoomTo(1f, getWidth() / 2f, getHeight() / 2f);
+                } else {
+                    notifyZoomSettled();
                 }
             }
         });
@@ -137,6 +151,10 @@ public class WebtoonZoomLayout extends FrameLayout {
         this.onSingleTap = r;
     }
 
+    public void setOnZoomSettledListener(OnZoomSettledListener listener) {
+        this.onZoomSettledListener = listener;
+    }
+
     public float getCurrentScale() {
         return currentScale;
     }
@@ -149,13 +167,20 @@ public class WebtoonZoomLayout extends FrameLayout {
             currentScale = 1f;
             panX = 0f;
             applyTransform();
+            notifyZoomSettled();
         }
     }
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            scroller.forceFinished(true);
+        }
         scaleDetector.onTouchEvent(ev);
         gestureDetector.onTouchEvent(ev);
+        if (ev.getPointerCount() > 1 || scaleDetector.isInProgress() || isScaling || currentScale > 1.01f) {
+            return true;
+        }
         return super.dispatchTouchEvent(ev);
     }
 
@@ -174,8 +199,11 @@ public class WebtoonZoomLayout extends FrameLayout {
             case MotionEvent.ACTION_CANCEL:
                 if (isScaling) {
                     isScaling = false;
-                    if (currentScale < 1.05f) {
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+                    if (currentScale < RESET_THRESHOLD) {
                         animateZoomTo(1f, getWidth() / 2f, getHeight() / 2f);
+                    } else {
+                        notifyZoomSettled();
                     }
                 }
                 break;
@@ -202,6 +230,7 @@ public class WebtoonZoomLayout extends FrameLayout {
         if (width <= 0) return;
         float minPanX = width - width * currentScale;
         panX = Math.max(minPanX, Math.min(0f, panX));
+        if (Math.abs(panX) < 0.5f) panX = 0f;
     }
 
     private void applyTransform() {
@@ -221,7 +250,9 @@ public class WebtoonZoomLayout extends FrameLayout {
         int desiredBottomPad = currentScale > 1.001f
                 ? Math.round(viewportH * (1f - 1f / currentScale))
                 : 0;
-        if (recyclerView.getPaddingBottom() != desiredBottomPad) {
+        desiredBottomPad = Math.round(desiredBottomPad / 8f) * 8;
+        if (lastBottomPadding != desiredBottomPad || recyclerView.getPaddingBottom() != desiredBottomPad) {
+            lastBottomPadding = desiredBottomPad;
             recyclerView.setClipToPadding(false);
             recyclerView.setPadding(
                     recyclerView.getPaddingLeft(),
@@ -259,7 +290,7 @@ public class WebtoonZoomLayout extends FrameLayout {
         int targetScroll = Math.max(0, Math.round(targetScrollF));
 
         zoomAnimator = ValueAnimator.ofFloat(0f, 1f);
-        zoomAnimator.setDuration(280);
+        zoomAnimator.setDuration(ZOOM_ANIMATION_MS);
         zoomAnimator.setInterpolator(new DecelerateInterpolator());
         int[] prevScroll = {startScroll};
         zoomAnimator.addUpdateListener(anim -> {
@@ -274,11 +305,23 @@ public class WebtoonZoomLayout extends FrameLayout {
                 prevScroll[0] = wantScroll;
             }
         });
+        zoomAnimator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                notifyZoomSettled();
+            }
+        });
         zoomAnimator.start();
     }
 
     private int computeRvScroll() {
         if (recyclerView == null) return 0;
         return recyclerView.computeVerticalScrollOffset();
+    }
+
+    private void notifyZoomSettled() {
+        if (onZoomSettledListener != null) {
+            onZoomSettledListener.onZoomSettled(currentScale);
+        }
     }
 }

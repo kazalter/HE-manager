@@ -9,6 +9,8 @@ from PIL import Image
 from sqlalchemy.orm import Session
 from datetime import datetime
 from . import models, database
+from .dedup import normalize as dedup_normalize
+from .dedup import worker as dedup_worker
 
 # Supported extensions
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm', '.flv', '.ts', '.m4v'}
@@ -302,6 +304,29 @@ def has_image_file(files):
     return any(os.path.splitext(file)[1].lower() in IMAGE_EXTENSIONS for file in files)
 
 
+def apply_local_dedup_precheck(
+    media: "models.Media",
+    library_title_index: set,
+    pending_dedup_paths: list,
+) -> None:
+    """Compute the normalized title and decide whether this entry needs the dedup worker.
+
+    Cheap: only an O(1) set lookup. The actual fingerprint + classification happens later
+    in the background (see dedup.worker).
+    """
+    norm = dedup_normalize.normalize_title(media.title or "")
+    media.normalized_title = norm
+    if norm and norm in library_title_index:
+        media.duplicate_status = "checking"
+        pending_dedup_paths.append(media.absolute_path)
+    else:
+        # default is 'unique' from the column default; set explicitly so the in-memory
+        # object matches what's about to be persisted.
+        media.duplicate_status = "unique"
+    if norm:
+        library_title_index.add(norm)
+
+
 def media_type_for_extension(scan_mode, ext):
     if scan_mode == "video" and ext in VIDEO_EXTENSIONS:
         return "video"
@@ -343,6 +368,21 @@ def scan_folder(folder_id: int):
             media.absolute_path: media
             for media in db.query(models.Media).filter(models.Media.folder_id == folder.id).all()
         }
+
+        # Cross-folder dedup: keep an in-memory set of normalized titles across the whole
+        # library so we can flag candidates without a DB hit per file. We only need to
+        # know "does any existing entry share this normalized title" (the worker will pull
+        # the actual rows when fingerprinting).
+        library_title_index: set[str] = set()
+        for row in (
+            db.query(models.Media.normalized_title)
+            .filter(models.Media.duplicate_status.notin_(["strong_duplicate", "checking"]))
+            .all()
+        ):
+            value = (row[0] or "").strip()
+            if value:
+                library_title_index.add(value)
+        pending_dedup_paths: list[str] = []
         
         print(
             f"--- Starting scan for folder: {folder.path} "
@@ -375,7 +415,8 @@ def scan_folder(folder_id: int):
                                 thumb_path = os.path.join(thumbnail_dir, thumb_name)
                                 if get_folder_thumbnail(root, thumb_path):
                                     media.cover_path = thumb_name
-                                
+
+                                apply_local_dedup_precheck(media, library_title_index, pending_dedup_paths)
                                 media_batch.append(media)
                                 existing_media[root] = media
                                 processed_count += 1
@@ -387,6 +428,7 @@ def scan_folder(folder_id: int):
                                     media_batch = []
                             else:
                                 existing.is_missing = False
+                                existing.missing_since = None
                                 if existing.page_count is None:
                                     existing.page_count = count_manga_pages(root, ".dir")
                             dirs[:] = []
@@ -406,6 +448,7 @@ def scan_folder(folder_id: int):
                         existing = existing_media.get(file_path)
                         if existing:
                             existing.is_missing = False
+                            existing.missing_since = None
                             try:
                                 file_size = os.path.getsize(file_path)
                                 if existing.file_size != file_size:
@@ -470,6 +513,7 @@ def scan_folder(folder_id: int):
                                 media.cover_path = thumb_name
 
                         if media:
+                            apply_local_dedup_precheck(media, library_title_index, pending_dedup_paths)
                             media_batch.append(media)
                             existing_media[file_path] = media
                             processed_count += 1
@@ -490,11 +534,27 @@ def scan_folder(folder_id: int):
 
         for item in existing_media.values():
             if item.absolute_path not in scanned_paths and not os.path.exists(item.absolute_path):
-                item.is_missing = True
+                if not item.is_missing:
+                    item.is_missing = True
+                    item.missing_since = datetime.now()
 
         folder.status = "idle"
         folder.last_scanned_at = datetime.now()
         db.commit()
+
+        # Hand off any candidates to the background dedup worker. We persist Media first
+        # (above commits) so each one has an id, then look them up by path.
+        if pending_dedup_paths:
+            checking_ids = [
+                row[0]
+                for row in db.query(models.Media.id)
+                .filter(models.Media.absolute_path.in_(pending_dedup_paths))
+                .filter(models.Media.duplicate_status == "checking")
+                .all()
+            ]
+            if checking_ids:
+                dedup_worker.enqueue(checking_ids)
+                print(f"--- Queued {len(checking_ids)} item(s) for dedup analysis ---")
         print(f"--- Scan completed at {datetime.now()}. Total new items: {processed_count} ---")
     except Exception as e:
         print(f"Scan error: {e}")

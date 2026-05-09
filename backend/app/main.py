@@ -11,22 +11,78 @@ import zipfile
 from typing import List, Optional
 from urllib.parse import urljoin, urlparse
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from . import auth, database, external_sources, models, schemas, scanner
 from .database import engine, get_db
+from .dedup import merge as dedup_merge
+from .dedup import worker as dedup_worker
 from .x_import import archive as x_archive
 from .x_import import importer as x_importer
 from .x_import import storage as x_storage
+from .x_import import sync as x_sync
 
 
 models.Base.metadata.create_all(bind=engine)
 
+
+def get_ranged_file_response(request: Request, file_path: str):
+    file_size = os.stat(file_path).st_size
+    range_header = request.headers.get("range")
+    media_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Content-Type": media_type,
+    }
+
+    if not range_header:
+        def file_iterator():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        return StreamingResponse(file_iterator(), headers=headers, media_type=media_type)
+    
+    try:
+        range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        start = int(range_match.group(1))
+        end = range_match.group(2)
+        end = int(end) if end else file_size - 1
+    except Exception:
+        start = 0
+        end = file_size - 1
+
+    start = max(0, start)
+    end = min(file_size - 1, end)
+    content_length = end - start + 1
+
+    headers["Content-Length"] = str(content_length)
+    headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    def ranged_file_iterator():
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            bytes_to_read = content_length
+            chunk_size = 1024 * 1024  # 1MB chunk
+            while bytes_to_read > 0:
+                chunk = f.read(min(chunk_size, bytes_to_read))
+                if not chunk:
+                    break
+                bytes_to_read -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(
+        ranged_file_iterator(),
+        status_code=206,
+        headers=headers,
+        media_type=media_type
+    )
 
 def ensure_folder_option_columns():
     inspector = inspect(engine)
@@ -55,6 +111,7 @@ def ensure_media_option_columns():
         "source_url": "VARCHAR",
         "source_site": "VARCHAR",
         "is_missing": "BOOLEAN NOT NULL DEFAULT 0",
+        "missing_since": "DATETIME",
     }
 
     with engine.begin() as conn:
@@ -126,6 +183,31 @@ def ensure_x_import_indexes():
 
 
 ensure_x_import_indexes()
+
+
+def ensure_dedup_columns():
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("media")}
+    with engine.begin() as conn:
+        if "normalized_title" not in columns:
+            conn.execute(text("ALTER TABLE media ADD COLUMN normalized_title VARCHAR"))
+        if "duplicate_status" not in columns:
+            conn.execute(text("ALTER TABLE media ADD COLUMN duplicate_status VARCHAR NOT NULL DEFAULT 'unique'"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_media_normalized_title ON media (normalized_title)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_media_duplicate_status ON media (duplicate_status)"))
+
+
+def ensure_dedup_indexes():
+    inspector = inspect(engine)
+    if not inspector.has_table("duplicate_candidates"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dup_candidates_status ON duplicate_candidates (status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dup_candidates_level ON duplicate_candidates (level)"))
+
+
+ensure_dedup_columns()
+ensure_dedup_indexes()
 
 app = FastAPI(title="HE Manager API")
 
@@ -842,6 +924,9 @@ def list_media(
     favorite: Optional[bool] = None,
     view_status: Optional[str] = None,
     is_missing: Optional[bool] = None,
+    duplicate_status: Optional[str] = None,
+    include_hidden_duplicates: bool = False,
+    source_site: Optional[str] = None,
     sort: str = "date",
     db: Session = Depends(get_db),
 ):
@@ -858,6 +943,17 @@ def list_media(
         query = query.filter(models.Media.view_status == view_status)
     if is_missing is not None:
         query = query.filter(models.Media.is_missing == is_missing)
+    if source_site:
+        if source_site == "local":
+            query = query.filter(models.Media.source_site.is_(None))
+        else:
+            query = query.filter(models.Media.source_site == source_site)
+    if duplicate_status:
+        query = query.filter(models.Media.duplicate_status == duplicate_status)
+    elif not include_hidden_duplicates:
+        query = query.filter(
+            models.Media.duplicate_status.notin_(["checking", "strong_duplicate", "suspected_duplicate"])
+        )
 
     if sort == "title":
         query = query.order_by(models.Media.title.asc())
@@ -914,6 +1010,12 @@ def get_mobile_thumbnail(filename: str, _: models.User = Depends(auth.get_curren
 @app.get("/media/{media_id}", response_model=schemas.Media)
 def get_media(media_id: int, db: Session = Depends(get_db)):
     media = get_media_or_404(media_id, db)
+    
+    # Auto-heal missing flag if file is back
+    if media.is_missing and os.path.exists(media.absolute_path):
+        media.is_missing = False
+        media.missing_since = None
+
     media.last_opened_at = datetime.utcnow()
     if media.view_status == "unviewed":
         media.view_status = "viewing"
@@ -972,9 +1074,63 @@ def delete_media(media_id: int, db: Session = Depends(get_db)):
                         pass
         except FileNotFoundError:
             pass
+
+    # Clean up FK references that don't cascade automatically. SQLite enforces
+    # foreign_keys=ON so leaving these would block the delete with a 500.
+    db.query(models.XMediaItem).filter(
+        models.XMediaItem.library_media_id == media.id
+    ).update({models.XMediaItem.library_media_id: None}, synchronize_session=False)
+    db.query(models.DuplicateCandidate).filter(
+        (models.DuplicateCandidate.existing_media_id == media.id)
+        | (models.DuplicateCandidate.candidate_media_id == media.id)
+    ).delete(synchronize_session=False)
+
     db.delete(media)
     db.commit()
     return {"message": "Media removed from library"}
+
+
+@app.post("/media/{media_id}/recheck", response_model=schemas.Media)
+def recheck_media(media_id: int, db: Session = Depends(get_db)):
+    media = get_media_or_404(media_id, db)
+    
+    if os.path.exists(media.absolute_path):
+        media.is_missing = False
+        media.missing_since = None
+        media.last_opened_at = datetime.utcnow()
+        try:
+            # Optionally update file size
+            media.file_size = os.path.getsize(media.absolute_path)
+        except OSError:
+            pass
+        db.commit()
+        db.refresh(media)
+        return media
+    else:
+        if not media.is_missing:
+            media.is_missing = True
+            media.missing_since = datetime.utcnow()
+            db.commit()
+            db.refresh(media)
+        raise HTTPException(status_code=404, detail="File still missing")
+
+
+@app.post("/system/recheck-missing")
+def recheck_all_missing(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    # This checks all missing files. Since checking os.path.exists is fast, we can do it synchronously,
+    # but to be totally safe we just do it right here and return the count of recovered items.
+    missing_items = db.query(models.Media).filter(models.Media.is_missing == True).all()
+    recovered_count = 0
+    for media in missing_items:
+        if os.path.exists(media.absolute_path):
+            media.is_missing = False
+            media.missing_since = None
+            recovered_count += 1
+    
+    if recovered_count > 0:
+        db.commit()
+    
+    return {"message": "Recheck completed", "total_missing_checked": len(missing_items), "recovered": recovered_count}
 
 
 @app.get("/tags", response_model=List[schemas.Tag])
@@ -1292,34 +1448,38 @@ def get_external_download_job(job_id: str):
 
 
 @app.get("/stream/{media_id}")
-def stream_media(media_id: int, db: Session = Depends(get_db)):
+def stream_media(request: Request, media_id: int, db: Session = Depends(get_db)):
     media = get_media_or_404(media_id, db)
 
     if not os.path.exists(media.absolute_path):
-        media.is_missing = True
-        db.commit()
+        if not media.is_missing:
+            media.is_missing = True
+            media.missing_since = datetime.utcnow()
+            db.commit()
         raise HTTPException(status_code=404, detail="File not found on disk")
+    elif media.is_missing:
+        media.is_missing = False
+        media.missing_since = None
+        db.commit()
 
-    media.last_opened_at = datetime.utcnow()
-    if media.view_status == "unviewed":
-        media.view_status = "viewing"
-    db.commit()
-    return FileResponse(media.absolute_path)
+    return get_ranged_file_response(request, media.absolute_path)
 
 
 @app.get("/mobile/stream/{media_id}")
-def stream_mobile_media(media_id: int, _: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def stream_mobile_media(request: Request, media_id: int, _: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     media = get_media_or_404(media_id, db)
     if not os.path.exists(media.absolute_path):
-        media.is_missing = True
-        db.commit()
+        if not media.is_missing:
+            media.is_missing = True
+            media.missing_since = datetime.utcnow()
+            db.commit()
         raise HTTPException(status_code=404, detail="File not found on disk")
+    elif media.is_missing:
+        media.is_missing = False
+        media.missing_since = None
+        db.commit()
 
-    media.last_opened_at = datetime.utcnow()
-    if media.view_status == "unviewed":
-        media.view_status = "viewing"
-    db.commit()
-    return FileResponse(media.absolute_path)
+    return get_ranged_file_response(request, media.absolute_path)
 
 
 @app.get("/manga/{media_id}/pages")
@@ -1352,6 +1512,11 @@ def get_manga_page(
     media = get_media_or_404(media_id, db)
     if media.media_type != "manga":
         raise HTTPException(status_code=404, detail="Manga not found")
+
+    if media.is_missing and os.path.exists(media.absolute_path):
+        media.is_missing = False
+        media.missing_since = None
+        db.commit()
 
     try:
         files = get_manga_image_files(media)
@@ -1503,6 +1668,8 @@ def update_x_source(source_id: int, payload: schemas.XImportSourceUpdate, db: Se
     data = payload.dict(exclude_unset=True)
     if "name" in data and data["name"]:
         source.name = data["name"].strip() or source.name
+    if "cookie" in data:
+        source.cookie = (data["cookie"] or "").strip() or None
     if "download_root_path" in data:
         path = (data["download_root_path"] or "").strip() or None
         if path:
@@ -1628,6 +1795,7 @@ def start_x_import(payload: schemas.XImportStartRequest, db: Session = Depends(g
         db,
         source.id,
         retry_failed_only=payload.retry_failed_only,
+        retry_skipped_only=payload.retry_skipped_only,
     )
     job_id = str(uuid.uuid4())
     job = x_importer.start_job(
@@ -1636,6 +1804,7 @@ def start_x_import(payload: schemas.XImportStartRequest, db: Session = Depends(g
         download_root=source.download_root_path,
         thumbnail_dir=THUMBNAIL_DIR,
         post_ids=post_ids,
+        cookie=source.cookie,
     )
     return job.to_dict()
 
@@ -1676,3 +1845,229 @@ def cancel_x_import_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="导入任务不存在")
     return job.to_dict()
+
+
+@app.post("/x/sources/{source_id}/sync", response_model=schemas.XSyncJob)
+def start_x_sync(source_id: int, db: Session = Depends(get_db)):
+    source = _x_source_or_404(source_id, db)
+    if not source.cookie:
+        raise HTTPException(status_code=400, detail="请先保存账号 cookie 再使用直接同步")
+
+    existing = x_sync.latest_sync_for_source(source.id)
+    if existing and existing.status in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="已有同步任务在进行")
+
+    job = x_sync.start_sync(source_id=source.id, cookie=source.cookie)
+    return job.to_dict()
+
+
+@app.get("/x/syncs/{job_id}", response_model=schemas.XSyncJob)
+def get_x_sync_job(job_id: str):
+    job = x_sync.get_sync(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="同步任务不存在或已被清理")
+    return job.to_dict()
+
+
+@app.get("/x/sources/{source_id}/active-sync", response_model=Optional[schemas.XSyncJob])
+def get_x_active_sync(source_id: int):
+    job = x_sync.latest_sync_for_source(source_id)
+    return job.to_dict() if job else None
+
+
+@app.post("/x/syncs/{job_id}/cancel", response_model=schemas.XSyncJob)
+def cancel_x_sync_job(job_id: str):
+    job = x_sync.request_cancel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="同步任务不存在")
+    return job.to_dict()
+
+
+# ----- Local-file deduplication -----
+
+
+def _serialize_dedup_media(media: models.Media) -> dict:
+    return {
+        "id": media.id,
+        "title": media.title,
+        "absolute_path": media.absolute_path,
+        "media_type": media.media_type,
+        "extension": media.extension,
+        "file_size": media.file_size,
+        "cover_path": media.cover_path,
+        "duration": media.duration,
+        "width": media.width,
+        "height": media.height,
+        "page_count": media.page_count,
+        "is_missing": bool(media.is_missing),
+        "duplicate_status": media.duplicate_status or "unique",
+        "favorite": bool(media.favorite),
+        "rating": media.rating or 0,
+        "source_url": media.source_url,
+        "source_site": media.source_site,
+    }
+
+
+def _serialize_pair(pair: models.DuplicateCandidate, db: Session) -> Optional[dict]:
+    existing = db.query(models.Media).filter(models.Media.id == pair.existing_media_id).first()
+    candidate = db.query(models.Media).filter(models.Media.id == pair.candidate_media_id).first()
+    if not existing or not candidate:
+        return None
+    return {
+        "id": pair.id,
+        "level": pair.level,
+        "similarity": pair.similarity or 0,
+        "reason": pair.reason,
+        "status": pair.status,
+        "created_at": pair.created_at,
+        "resolved_at": pair.resolved_at,
+        "resolution_note": pair.resolution_note,
+        "existing": _serialize_dedup_media(existing),
+        "candidate": _serialize_dedup_media(candidate),
+    }
+
+
+@app.get("/dedup/summary", response_model=schemas.DedupSummary)
+def dedup_summary(db: Session = Depends(get_db)):
+    pending_pairs = (
+        db.query(models.DuplicateCandidate)
+        .filter(models.DuplicateCandidate.status == "pending")
+        .count()
+    )
+    base = db.query(models.Media)
+    return {
+        "pending_pairs": pending_pairs,
+        "strong_duplicate": base.filter(models.Media.duplicate_status == "strong_duplicate").count(),
+        "suspected_duplicate": base.filter(models.Media.duplicate_status == "suspected_duplicate").count(),
+        "weak_suspected": base.filter(models.Media.duplicate_status == "weak_suspected").count(),
+        "checking": base.filter(models.Media.duplicate_status == "checking").count(),
+        "queue_size": dedup_worker.queue_size(),
+        "worker_running": dedup_worker.is_running(),
+    }
+
+
+@app.get("/dedup/candidates", response_model=List[schemas.DuplicateCandidatePair])
+def list_duplicate_candidates(
+    level: Optional[str] = None,
+    status: str = "pending",
+    media_type: Optional[str] = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.DuplicateCandidate)
+    if status and status != "all":
+        query = query.filter(models.DuplicateCandidate.status == status)
+    if level:
+        query = query.filter(models.DuplicateCandidate.level == level)
+    pairs = (
+        query.order_by(
+            models.DuplicateCandidate.status.asc(),
+            models.DuplicateCandidate.similarity.desc(),
+            models.DuplicateCandidate.id.desc(),
+        )
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    out: List[dict] = []
+    for pair in pairs:
+        serialized = _serialize_pair(pair, db)
+        if not serialized:
+            continue
+        if media_type and serialized["existing"]["media_type"] != media_type:
+            continue
+        out.append(serialized)
+    return out
+
+
+@app.get("/dedup/candidates/{pair_id}", response_model=schemas.DuplicateCandidatePair)
+def get_duplicate_candidate(pair_id: int, db: Session = Depends(get_db)):
+    pair = db.query(models.DuplicateCandidate).filter(models.DuplicateCandidate.id == pair_id).first()
+    if not pair:
+        raise HTTPException(status_code=404, detail="重复条目不存在")
+    serialized = _serialize_pair(pair, db)
+    if not serialized:
+        raise HTTPException(status_code=404, detail="对应媒体已不存在")
+    return serialized
+
+
+_DEDUP_ACTIONS = {
+    dedup_merge.ACTION_KEEP_EXISTING,
+    dedup_merge.ACTION_REPLACE_PATH,
+    dedup_merge.ACTION_KEEP_BOTH,
+    dedup_merge.ACTION_IGNORE,
+}
+
+
+@app.post("/dedup/candidates/{pair_id}/resolve", response_model=schemas.DuplicateCandidatePair)
+def resolve_duplicate_candidate(
+    pair_id: int,
+    payload: schemas.DedupActionRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.action not in _DEDUP_ACTIONS:
+        raise HTTPException(status_code=400, detail="不支持的合并动作")
+    pair = db.query(models.DuplicateCandidate).filter(models.DuplicateCandidate.id == pair_id).first()
+    if not pair:
+        raise HTTPException(status_code=404, detail="重复条目不存在")
+    if pair.status != "pending":
+        raise HTTPException(status_code=409, detail="该条目已被处理过")
+
+    pair = dedup_merge.apply_action(db, pair, payload.action, note=payload.note)
+    db.refresh(pair)
+    serialized = _serialize_pair(pair, db)
+    if not serialized:
+        raise HTTPException(status_code=404, detail="处理后媒体已不存在")
+    return serialized
+
+
+@app.post("/dedup/media/{media_id}/recheck")
+def recheck_media_dedup(media_id: int, db: Session = Depends(get_db)):
+    media = db.query(models.Media).filter(models.Media.id == media_id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+    media.duplicate_status = "checking"
+    db.commit()
+    dedup_worker.enqueue([media.id])
+    return {"queued": True, "media_id": media.id}
+
+
+@app.delete("/dedup/media/{media_id}/file")
+def delete_media_file(
+    media_id: int,
+    payload: schemas.DedupDeleteFileRequest,
+    db: Session = Depends(get_db),
+):
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="请通过 confirm=true 二次确认")
+    media = db.query(models.Media).filter(models.Media.id == media_id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    file_deleted = False
+    target_path = media.absolute_path
+    if target_path and os.path.exists(target_path):
+        try:
+            if os.path.isdir(target_path):
+                shutil.rmtree(target_path)
+            else:
+                os.remove(target_path)
+            file_deleted = True
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"文件删除失败：{exc}")
+
+    # Same FK cleanup as DELETE /media/{id}: SQLite foreign_keys=ON would otherwise
+    # block deletion when x_media_items or duplicate_candidates still reference this row.
+    db.query(models.XMediaItem).filter(
+        models.XMediaItem.library_media_id == media.id
+    ).update({models.XMediaItem.library_media_id: None}, synchronize_session=False)
+    db.query(models.DuplicateCandidate).filter(
+        (models.DuplicateCandidate.existing_media_id == media.id)
+        | (models.DuplicateCandidate.candidate_media_id == media.id)
+    ).delete(synchronize_session=False)
+
+    fp = db.query(models.MediaFingerprint).filter(models.MediaFingerprint.media_id == media.id).first()
+    if fp:
+        db.delete(fp)
+    db.delete(media)
+    db.commit()
+    return {"file_deleted": file_deleted, "media_id": media_id}

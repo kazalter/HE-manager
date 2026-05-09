@@ -23,6 +23,7 @@ const sortBy = ref<'date' | 'title' | 'rating' | 'opened'>('date')
 const selectedTag = ref('')
 const tagDropdownOpen = ref(false)
 const favoriteOnly = ref(false)
+const sourceFilter = ref<'' | 'x' | 'wnacg' | 'local'>('')
 
 const pageTitle = computed(() => {
   if (props.mediaType === 'video') return '所有视频'
@@ -56,6 +57,7 @@ const fetchMedia = async () => {
       search: searchQuery.value || undefined,
       tag: selectedTag.value || undefined,
       favorite: favoriteOnly.value ? true : undefined,
+      source_site: sourceFilter.value || undefined,
       sort: sortBy.value,
     }
     const res = await axios.get(`${API_BASE_URL}/media`, { params })
@@ -142,7 +144,7 @@ watch(searchQuery, () => {
   searchTimer = window.setTimeout(fetchMedia, 250)
 })
 
-watch([() => props.mediaType, selectedTag, sortBy, favoriteOnly], fetchMedia)
+watch([() => props.mediaType, selectedTag, sortBy, favoriteOnly, sourceFilter], fetchMedia)
 watch(() => route.query.favorite, value => {
   favoriteOnly.value = value === 'true'
 }, { immediate: true })
@@ -150,10 +152,22 @@ watch(() => route.query.media, () => {
   syncSelectedMediaFromRoute()
 })
 
+const triggerMissingRecheck = async () => {
+  try {
+    const res = await axios.post(`${API_BASE_URL}/system/recheck-missing`)
+    if (res.data.recovered > 0) {
+      fetchMedia()
+    }
+  } catch (err) {
+    // silently ignore errors
+  }
+}
+
 onMounted(async () => {
   await fetchMedia()
   await syncSelectedMediaFromRoute()
   fetchTags()
+  triggerMissingRecheck()
 })
 </script>
 
@@ -231,6 +245,40 @@ onMounted(async () => {
           <option value="" class="bg-white text-slate-950">全部标签</option>
           <option v-for="tag in tags" :key="tag.id" :value="tag.name" class="bg-white text-slate-950">{{ tag.name }}</option>
           </template>
+        </div>
+
+        <div class="flex bg-white/5 rounded-xl p-1 border border-white/10">
+          <button
+            @click="sourceFilter = ''"
+            :class="sourceFilter === '' ? 'bg-accent text-white' : 'text-white/45 hover:text-white'"
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+          >
+            全部来源
+          </button>
+          <button
+            @click="sourceFilter = 'local'"
+            :class="sourceFilter === 'local' ? 'bg-accent text-white' : 'text-white/45 hover:text-white'"
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+            title="本地扫描的媒体（无外部来源）"
+          >
+            本地
+          </button>
+          <button
+            @click="sourceFilter = 'x'"
+            :class="sourceFilter === 'x' ? 'bg-accent text-white' : 'text-white/45 hover:text-white'"
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+            title="X (Twitter) 导入的媒体"
+          >
+            X
+          </button>
+          <button
+            @click="sourceFilter = 'wnacg'"
+            :class="sourceFilter === 'wnacg' ? 'bg-accent text-white' : 'text-white/45 hover:text-white'"
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+            title="wnacg 下载的媒体"
+          >
+            wnacg
+          </button>
         </div>
 
         <div class="flex bg-white/5 rounded-xl p-1 border border-white/10">

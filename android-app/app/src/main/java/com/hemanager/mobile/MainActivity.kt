@@ -1,11 +1,16 @@
 package com.hemanager.mobile
 
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Bundle
-import android.util.LruCache
 import android.widget.Toast
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
@@ -34,7 +39,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,6 +54,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -68,6 +73,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -84,6 +94,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
@@ -132,13 +143,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -147,7 +160,6 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -162,7 +174,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -170,25 +181,34 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
-    private val coverCache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 1024 / 10).toInt()) {
-        override fun sizeOf(key: String, value: Bitmap): Int {
-            return value.byteCount / 1024
-        }
+    private val coverImageLoader: ImageLoader by lazy {
+        ImageLoader.Builder(this)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .networkCachePolicy(CachePolicy.ENABLED)
+            .memoryCache {
+                MemoryCache.Builder(this)
+                    .maxSizePercent(0.24)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("coil_cover_cache"))
+                    .maxSizeBytes(256L * 1024L * 1024L)
+                    .build()
+            }
+            .build()
     }
-    private val coverInFlightLock = Mutex()
-    private val coverInFlight = mutableMapOf<String, CompletableDeferred<Bitmap?>>()
 
     internal val resumeTick = mutableStateOf(0)
 
@@ -218,7 +238,13 @@ class MainActivity : ComponentActivity() {
     )
 
     private data class FilterOption(val label: String, val value: String)
+    private data class GalleryPinchAnchor(val itemIndex: Int, val topOffsetPx: Int)
     private enum class LibraryViewMode { Large, Grid, Detail }
+    private val imageGalleryMinTileDp = 46f
+    private val imageGalleryMaxTileDp = 150f
+    private val imageGalleryMinColumns = 3
+    private val imageGalleryMaxColumns = 7
+    private val imageGalleryTilePrefKey = "mobile_image_gallery_tile_dp"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -506,7 +532,7 @@ class MainActivity : ComponentActivity() {
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        item {
+                        item(key = "library-header", contentType = "library-header") {
                             LibraryHeader(
                                 serverUrl = serverUrl,
                                 items = items,
@@ -516,7 +542,7 @@ class MainActivity : ComponentActivity() {
                                 onRefresh = { load() }
                             )
                         }
-                        item {
+                        item(key = "library-search", contentType = "library-search") {
                             SearchAndFilterPanel(
                                 search = search,
                                 onSearchChange = { search = it },
@@ -527,7 +553,7 @@ class MainActivity : ComponentActivity() {
                                 onSearch = { load() }
                             )
                         }
-                        item {
+                        item(key = "library-error", contentType = "library-error") {
                             AnimatedVisibility(
                                 visible = error != null,
                                 enter = fadeIn(tween(180)) + expandVertically(),
@@ -536,7 +562,7 @@ class MainActivity : ComponentActivity() {
                                 ErrorPanel(error = error ?: "", onRetry = { load() })
                             }
                         }
-                        item {
+                        item(key = "library-loading-line", contentType = "library-loading-line") {
                             AnimatedVisibility(
                                 visible = loading,
                                 enter = fadeIn(tween(160)),
@@ -556,8 +582,8 @@ class MainActivity : ComponentActivity() {
                             item { EmptyState() }
                         }
                         items(items, key = { it.id }) { item ->
-                            MediaCard(serverUrl, token, item) { restart -> 
-                                openItem(item, serverUrl, token, restart) 
+                            MediaCard(serverUrl, token, item) { restart ->
+                                openItem(item, serverUrl, token, restart, items)
                             }
                         }
                     }
@@ -985,7 +1011,6 @@ class MainActivity : ComponentActivity() {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .animateContentSize(animationSpec = spring(stiffness = 420f, dampingRatio = 0.86f))
                 .graphicsLayer {
                     scaleX = cardScale
                     scaleY = cardScale
@@ -1098,11 +1123,6 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun RemoteCover(url: String?, label: String, accent: Color) {
-        val bitmap by produceState<Bitmap?>(initialValue = cachedCover(url), key1 = url) {
-            if (url.isNullOrBlank() || value != null) return@produceState
-            value = withContext(Dispatchers.IO) { loadCoverBitmap(url) }
-        }
-
         Box(
             modifier = Modifier
                 .width(92.dp)
@@ -1119,31 +1139,29 @@ class MainActivity : ComponentActivity() {
                 .border(1.dp, accent.copy(alpha = 0.16f), RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap!!.asImageBitmap(),
-                    contentDescription = label,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.60f)),
-                                startY = 120f
-                            )
+            Text(
+                label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+            CoilCoverImage(
+                url = url,
+                label = label,
+                decodeWidthPx = 184,
+                decodeHeightPx = 256,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.60f)),
+                            startY = 120f
                         )
-                )
-            } else {
-                Text(
-                    label,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+                    )
+            )
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -1161,6 +1179,41 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    @Composable
+    private fun CoilCoverImage(
+        url: String?,
+        label: String,
+        decodeWidthPx: Int,
+        decodeHeightPx: Int,
+        crossfadeMillis: Int = 80,
+        networkAllowed: Boolean = true,
+        networkAllowedProvider: (() -> Boolean)? = null,
+        requestRestartKey: Int = 0,
+        modifier: Modifier = Modifier,
+        contentScale: ContentScale = ContentScale.Crop
+    ) {
+        if (url.isNullOrBlank()) return
+        val width = remember(decodeWidthPx) { coverDecodeBucketPx(decodeWidthPx) }
+        val height = remember(decodeHeightPx) { coverDecodeBucketPx(decodeHeightPx) }
+        val request = remember(url, width, height, crossfadeMillis, networkAllowed, requestRestartKey) {
+            coverImageRequest(
+                url,
+                width,
+                height,
+                crossfadeMillis,
+                networkAllowedProvider?.invoke() ?: networkAllowed
+            )
+        }
+
+        AsyncImage(
+            model = request,
+            contentDescription = label,
+            imageLoader = coverImageLoader,
+            contentScale = contentScale,
+            modifier = modifier
+        )
     }
 
     @Composable
@@ -1542,9 +1595,227 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
+        val visibleGridRows by remember {
+            derivedStateOf { visibleItems.chunked(3) }
+        }
         val listState = rememberLazyListState()
+        val imageGridState = rememberLazyGridState()
+        val density = LocalDensity.current
+        var coverPrefetchJob by remember { mutableStateOf<Job?>(null) }
+        val coverPrefetchDisposables = remember { mutableListOf<coil.request.Disposable>() }
+        var imageGalleryCurrentColumns by remember { mutableStateOf(5) }
+        val imageGalleryNetworkAllowed = remember { AtomicBoolean(true) }
+        val imageGalleryNetworkAllowedProvider = remember(imageGalleryNetworkAllowed) {
+            { imageGalleryNetworkAllowed.get() }
+        }
+        var imageGalleryLoadGeneration by remember { mutableIntStateOf(0) }
+        val showBackToTopButton by remember {
+            derivedStateOf {
+                if (mediaType == "image") {
+                    imageGridState.firstVisibleItemIndex > 1 || imageGridState.firstVisibleItemScrollOffset > 360
+                } else {
+                    listState.firstVisibleItemIndex > 1 || listState.firstVisibleItemScrollOffset > 360
+                }
+            }
+        }
+        val galleryPrefs = remember { getSharedPreferences("he_manager", MODE_PRIVATE) }
+        var imageGalleryStableTileDp by remember {
+            mutableFloatStateOf(
+                galleryPrefs
+                    .getFloat(imageGalleryTilePrefKey, 78f)
+                    .coerceIn(imageGalleryMinTileDp, imageGalleryMaxTileDp)
+            )
+        }
+        var imageGalleryTemporaryTileDp by remember { mutableFloatStateOf(imageGalleryStableTileDp) }
+        var imageGalleryPinchStartTileDp by remember { mutableFloatStateOf(imageGalleryStableTileDp) }
+        var imageGalleryPinching by remember { mutableStateOf(false) }
+        var imageGallerySettling by remember { mutableStateOf(false) }
+        var imageGalleryInteractionsEnabled by remember { mutableStateOf(true) }
+        var imageGalleryAnchor by remember { mutableStateOf<GalleryPinchAnchor?>(null) }
+        var imageGalleryAnchorJob by remember { mutableStateOf<Job?>(null) }
+        val renderedImageTileDp by animateFloatAsState(
+            targetValue = if (imageGalleryPinching) imageGalleryTemporaryTileDp else imageGalleryStableTileDp,
+            animationSpec = if (imageGalleryPinching) {
+                tween(durationMillis = 0)
+            } else {
+                tween(durationMillis = 160, easing = FastOutSlowInEasing)
+            },
+            label = "imageGalleryTileDp",
+            finishedListener = {
+                if (imageGallerySettling) {
+                    imageGallerySettling = false
+                    imageGalleryTemporaryTileDp = imageGalleryStableTileDp
+                    imageGalleryAnchor = null
+                    galleryPrefs.edit().putFloat(imageGalleryTilePrefKey, imageGalleryStableTileDp).apply()
+                    imageGalleryInteractionsEnabled = true
+                }
+            }
+        )
         val swipeController = remember { SwipeRevealController() }
+
+        fun imageGalleryTileForColumns(availableWidthDp: Float, gapDp: Float, columns: Int): Float {
+            return ((availableWidthDp - gapDp * (columns - 1)) / columns).coerceAtLeast(1f)
+        }
+
+        fun nearestImageGalleryPreset(sizeDp: Float, availableWidthDp: Float, gapDp: Float): Float {
+            return (imageGalleryMinColumns..imageGalleryMaxColumns)
+                .map { columns -> imageGalleryTileForColumns(availableWidthDp, gapDp, columns) }
+                .minByOrNull { abs(it - sizeDp) }
+                ?: imageGalleryTileForColumns(availableWidthDp, gapDp, 5)
+        }
+
+        fun captureImageGalleryAnchor(focalPoint: Offset): GalleryPinchAnchor? {
+            val item = imageGridState.layoutInfo.visibleItemsInfo
+                .filter { (it.key as? String)?.startsWith("image-gallery-") == true }
+                .minByOrNull {
+                    val centerX = it.offset.x + it.size.width / 2f
+                    val centerY = it.offset.y + it.size.height / 2f
+                    abs(centerX - focalPoint.x) + abs(centerY - focalPoint.y)
+                }
+            return item?.let { GalleryPinchAnchor(itemIndex = it.index, topOffsetPx = it.offset.y) }
+        }
+
+        fun scheduleImageGalleryAnchorCorrection() {
+            val anchor = imageGalleryAnchor ?: return
+            imageGalleryAnchorJob?.cancel()
+            imageGalleryAnchorJob = scope.launch {
+                withFrameNanos { }
+                imageGridState.scrollToItem(anchor.itemIndex, -anchor.topOffsetPx)
+            }
+        }
+
+        fun coverPrefetchStartIndex(): Int {
+            val visibleIds = if (mediaType == "image") {
+                imageGridState.layoutInfo.visibleItemsInfo.mapNotNull {
+                    (it.key as? String)?.removePrefix("image-gallery-")?.toIntOrNull()
+                }
+            } else {
+                listState.layoutInfo.visibleItemsInfo.mapNotNull { info ->
+                    val key = info.key as? String
+                    when {
+                        key?.startsWith("large-") == true -> key.removePrefix("large-").toIntOrNull()
+                        key?.startsWith("detail-") == true -> key.removePrefix("detail-").toIntOrNull()
+                        key?.startsWith("grid-") == true -> key.removePrefix("grid-").toIntOrNull()
+                        else -> null
+                    }
+                }
+            }
+            val firstVisibleId = visibleIds.firstOrNull() ?: return 0
+            return visibleItems.indexOfFirst { it.id == firstVisibleId }.coerceAtLeast(0)
+        }
+
+        fun imageGalleryVisibleMediaIndices(): List<Int> {
+            if (mediaType != "image") return emptyList()
+            return imageGridState.layoutInfo.visibleItemsInfo.mapNotNull {
+                val id = (it.key as? String)
+                    ?.removePrefix("image-gallery-")
+                    ?.toIntOrNull()
+                    ?: return@mapNotNull null
+                visibleItems.indexOfFirst { media -> media.id == id }.takeIf { index -> index >= 0 }
+            }
+        }
+
+        fun coverPrefetchSize(): Pair<Int, Int> {
+            return if (mediaType == "image") {
+                val tilePx = with(density) { renderedImageTileDp.dp.toPx().roundToInt() }
+                val px = imageGalleryDecodeBucketPx(tilePx, imageGalleryCurrentColumns)
+                px to px
+            } else {
+                when (viewMode) {
+                    LibraryViewMode.Large -> 420 to 280
+                    LibraryViewMode.Grid -> 220 to 320
+                    LibraryViewMode.Detail -> 156 to 216
+                }
+            }
+        }
+
+        fun cancelCoverPrefetches() {
+            coverPrefetchJob?.cancel()
+            synchronized(coverPrefetchDisposables) {
+                coverPrefetchDisposables.forEach { it.dispose() }
+                coverPrefetchDisposables.clear()
+            }
+        }
+
+        fun scheduleCoverPrefetch(deferMs: Long = if (mediaType == "image") 220L else 0L) {
+            cancelCoverPrefetches()
+            val (reqWidth, reqHeight) = coverPrefetchSize()
+            val itemsToPrefetch = if (mediaType == "image") {
+                val visibleIndices = imageGalleryVisibleMediaIndices()
+                if (visibleIndices.isNotEmpty()) {
+                    val firstVisible = visibleIndices.minOrNull() ?: 0
+                    val lastVisible = visibleIndices.maxOrNull() ?: firstVisible
+                    val beforeCount = imageGalleryCurrentColumns
+                    val afterRows = when {
+                        imageGalleryCurrentColumns >= 6 -> 3
+                        imageGalleryCurrentColumns == 5 -> 4
+                        else -> 5
+                    }
+                    val afterCount = imageGalleryCurrentColumns * afterRows
+                    val current = (firstVisible..lastVisible).toList()
+                    val ahead = ((lastVisible + 1)..(lastVisible + afterCount))
+                        .filter { it in visibleItems.indices }
+                    val behind = ((firstVisible - beforeCount) until firstVisible)
+                        .filter { it in visibleItems.indices }
+                    (current + ahead + behind)
+                        .distinct()
+                        .mapNotNull { visibleItems.getOrNull(it) }
+                } else {
+                    val startIndex = coverPrefetchStartIndex()
+                    val beforeCount = imageGalleryCurrentColumns
+                    val afterCount = imageGalleryCurrentColumns * 4
+                    visibleItems
+                        .drop((startIndex - beforeCount).coerceAtLeast(0))
+                        .take(beforeCount + afterCount)
+                }
+            } else {
+                val startIndex = coverPrefetchStartIndex()
+                visibleItems
+                    .drop((startIndex - 8).coerceAtLeast(0))
+                    .take(64)
+            }.filter { coverUrl(serverUrl, token, it) != null }
+            if (itemsToPrefetch.isEmpty()) return
+            coverPrefetchJob = scope.launch(Dispatchers.IO) prefetch@{
+                if (deferMs > 0L) delay(deferMs)
+                if (mediaType == "image" && !imageGalleryNetworkAllowed.get()) return@prefetch
+                val chunkSize = if (mediaType == "image") 4 else 18
+                val chunkDelay = if (mediaType == "image") 90L else 24L
+                itemsToPrefetch.chunked(chunkSize).forEach { chunk ->
+                    if (mediaType == "image" && !imageGalleryNetworkAllowed.get()) return@prefetch
+                    coroutineScope {
+                        chunk.forEach { item ->
+                            launch {
+                                val url = coverUrl(serverUrl, token, item) ?: return@launch
+                                val disposable = coverImageLoader.enqueue(
+                                    coverImageRequest(url, reqWidth, reqHeight, crossfadeMillis = 0)
+                                )
+                                synchronized(coverPrefetchDisposables) {
+                                    coverPrefetchDisposables.add(disposable)
+                                }
+                            }
+                        }
+                    }
+                    delay(chunkDelay)
+                }
+            }
+        }
+
+        LaunchedEffect(
+            visibleItems.size,
+            mediaType,
+            statusFilter,
+            search,
+            viewMode,
+            renderedImageTileDp.roundToInt(),
+            imageGalleryPinching,
+            imageGallerySettling
+        ) {
+            if (visibleItems.isEmpty()) return@LaunchedEffect
+            if (mediaType == "image" && (imageGalleryPinching || imageGallerySettling)) return@LaunchedEffect
+            delay(180L)
+            scheduleCoverPrefetch()
+        }
+
         LaunchedEffect(listState, swipeController) {
             snapshotFlow { listState.isScrollInProgress }
                 .distinctUntilChanged()
@@ -1552,7 +1823,46 @@ class MainActivity : ComponentActivity() {
                     if (scrolling && !swipeController.isDragging) swipeController.close()
                 }
         }
+        LaunchedEffect(imageGridState, swipeController) {
+            snapshotFlow { imageGridState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collectLatest { scrolling ->
+                    if (scrolling && !swipeController.isDragging && !imageGalleryPinching) swipeController.close()
+                }
+        }
+        LaunchedEffect(imageGridState) {
+            snapshotFlow { Triple(renderedImageTileDp, imageGalleryPinching, imageGallerySettling) }
+                .collectLatest { (_, pinching, settling) ->
+                    if ((pinching || settling) && mediaType == "image") {
+                        imageGalleryAnchor?.let {
+                            imageGridState.scrollToItem(it.itemIndex, -it.topOffsetPx)
+                        }
+                    }
+                }
+        }
+        LaunchedEffect(listState, imageGridState, mediaType) {
+            snapshotFlow {
+                if (mediaType == "image") imageGridState.isScrollInProgress else listState.isScrollInProgress
+            }
+                .distinctUntilChanged()
+                .collectLatest { scrolling ->
+                    if (scrolling) {
+                        cancelCoverPrefetches()
+                        if (mediaType == "image") imageGalleryNetworkAllowed.set(false)
+                    } else {
+                        delay(if (mediaType == "image") 180L else 120L)
+                        if (mediaType == "image") {
+                            imageGalleryNetworkAllowed.set(true)
+                            imageGalleryLoadGeneration += 1
+                        }
+                        scheduleCoverPrefetch(deferMs = if (mediaType == "image") 260L else 0L)
+                    }
+                }
+        }
         LaunchedEffect(viewMode) { swipeController.close() }
+        LaunchedEffect(mediaType) {
+            if (mediaType != "image") imageGalleryNetworkAllowed.set(true)
+        }
 
         fun load(query: String = search) {
             val currentRequest = requestId + 1
@@ -1653,6 +1963,17 @@ class MainActivity : ComponentActivity() {
             if (resumeCounter != initialResumeTick) load(search)
         }
 
+        fun scrollLibraryToTop() {
+            swipeController.close()
+            scope.launch {
+                if (mediaType == "image") {
+                    imageGridState.animateScrollToItem(0)
+                } else {
+                    listState.animateScrollToItem(0)
+                }
+            }
+        }
+
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
@@ -1693,6 +2014,162 @@ class MainActivity : ComponentActivity() {
                         .background(AppBackgroundBrushV2())
                         .padding(padding)
                 ) {
+                    if (mediaType == "image") {
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            val galleryGapDp = 2f
+                            val availableWidthDp = (maxWidth.value - 4f).coerceAtLeast(1f)
+                            val galleryColumns = floor(
+                                (availableWidthDp + galleryGapDp) / (renderedImageTileDp + galleryGapDp)
+                            ).toInt().coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+                            val actualImageTileDp = (
+                                (availableWidthDp - galleryGapDp * (galleryColumns - 1)) / galleryColumns
+                            ).coerceAtLeast(1f)
+                            LaunchedEffect(galleryColumns) {
+                                imageGalleryCurrentColumns = galleryColumns
+                            }
+                        LazyVerticalGrid(
+                            state = imageGridState,
+                            columns = GridCells.Fixed(galleryColumns),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .imageGalleryPinchZoom(
+                                    enabled = true,
+                                    onPinchStart = { focalPoint ->
+                                        imageGalleryPinching = true
+                                        imageGallerySettling = false
+                                        imageGalleryInteractionsEnabled = false
+                                        imageGalleryPinchStartTileDp = renderedImageTileDp
+                                        imageGalleryTemporaryTileDp = renderedImageTileDp
+                                        imageGalleryAnchor = captureImageGalleryAnchor(focalPoint)
+                                        swipeController.close()
+                                    },
+                                    onPinch = { scale, _ ->
+                                        imageGalleryTemporaryTileDp = (imageGalleryPinchStartTileDp * scale)
+                                            .coerceIn(imageGalleryMinTileDp, imageGalleryMaxTileDp)
+                                        scheduleImageGalleryAnchorCorrection()
+                                    },
+                                    onPinchEnd = {
+                                        imageGalleryPinching = false
+                                        imageGallerySettling = true
+                                        imageGalleryStableTileDp = nearestImageGalleryPreset(
+                                            imageGalleryTemporaryTileDp,
+                                            availableWidthDp,
+                                            galleryGapDp
+                                        )
+                                        scheduleImageGalleryAnchorCorrection()
+                                        scope.launch {
+                                            delay(220L)
+                                            if (imageGallerySettling && !imageGalleryPinching) {
+                                                imageGallerySettling = false
+                                                imageGalleryTemporaryTileDp = imageGalleryStableTileDp
+                                                imageGalleryAnchor = null
+                                                galleryPrefs.edit().putFloat(imageGalleryTilePrefKey, imageGalleryStableTileDp).apply()
+                                                imageGalleryInteractionsEnabled = true
+                                            }
+                                        }
+                                    }
+                                )
+                                .pointerInput(swipeController) {
+                                    detectTapGestures(onTap = { swipeController.close() })
+                                },
+                            contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = 16.dp, bottom = 28.dp),
+                            horizontalArrangement = Arrangement.spacedBy(galleryGapDp.dp),
+                            verticalArrangement = Arrangement.spacedBy(galleryGapDp.dp)
+                        ) {
+                            item(key = "image-gallery-header", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-header") {
+                                Column(Modifier.padding(horizontal = 16.dp)) {
+                                    LibraryHeaderV2(
+                                        loading = loading,
+                                        viewMode = viewMode,
+                                        galleryMode = true,
+                                        onViewModeSelected = { viewMode = it },
+                                        onMenu = { scope.launch { drawerState.open() } },
+                                        onRefresh = { load(search) }
+                                    )
+                                }
+                            }
+                            item(key = "image-gallery-search", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-search") {
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                    SearchAndFilterPanelV2(
+                                        search = search,
+                                        onSearchChange = { search = it },
+                                        filters = mediaFilters,
+                                        selectedValue = mediaType,
+                                        onSelected = { mediaType = it },
+                                        statusFilters = statusFilters,
+                                        selectedStatusValue = statusFilter,
+                                        onStatusSelected = { statusFilter = it },
+                                        onOpenFilters = { filterSheetOpen = true }
+                                    )
+                                }
+                            }
+                            item(key = "image-gallery-error", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-error") {
+                                AnimatedVisibility(
+                                    visible = error != null,
+                                    enter = fadeIn(tween(180)) + expandVertically(),
+                                    exit = fadeOut(tween(160)) + shrinkVertically()
+                                ) {
+                                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                                        ErrorPanelV2(error = error ?: "", loading = loading, onRetry = { load(search) })
+                                    }
+                                }
+                            }
+                            item(key = "image-gallery-loading-line", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-loading-line") {
+                                AnimatedVisibility(
+                                    visible = loading,
+                                    enter = fadeIn(tween(160)),
+                                    exit = fadeOut(tween(160))
+                                ) {
+                                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                                        LoadingLineV2()
+                                    }
+                                }
+                            }
+                            if (loading && allItems.isEmpty()) {
+                                gridItems(
+                                    (0 until 30).toList(),
+                                    key = { "image-gallery-loading-$it" },
+                                    contentType = { "gallery-skeleton" }
+                                ) { index ->
+                                    ImageGallerySkeletonV2(index)
+                                }
+                            }
+                            if (!loading && error == null && visibleItems.isEmpty()) {
+                                item(key = "image-gallery-empty", span = { GridItemSpan(maxLineSpan) }, contentType = "gallery-empty") {
+                                    Column(Modifier.padding(horizontal = 16.dp)) {
+                                        EmptyStateV2()
+                                    }
+                                }
+                            }
+                            if (!loading || allItems.isNotEmpty()) {
+                                gridItems(
+                                    visibleItems,
+                                    key = { "image-gallery-${it.id}" },
+                                    contentType = { "gallery-tile" }
+                                ) { item ->
+                                    val itemCoverUrl = remember(serverUrl, token, item.coverPath) {
+                                        coverUrl(serverUrl, token, item)
+                                    }
+                                    val openGalleryItem = remember(item.id, serverUrl, token, visibleItems) {
+                                        { openItem(item, serverUrl, token, false, visibleItems) }
+                                    }
+                                    ImageGalleryTileV2(
+                                        coverUrl = itemCoverUrl,
+                                        label = item.title,
+                                        favorite = item.favorite,
+                                        missing = item.missing,
+                                        tileDp = actualImageTileDp,
+                                        columns = galleryColumns,
+                                        interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
+                                        networkAllowedProvider = imageGalleryNetworkAllowedProvider,
+                                        requestRestartKey = imageGalleryLoadGeneration,
+                                        onOpen = openGalleryItem
+                                    )
+                                }
+                            }
+                        }
+                        }
+                    } else {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -1707,6 +2184,7 @@ class MainActivity : ComponentActivity() {
                             LibraryHeaderV2(
                                 loading = loading,
                                 viewMode = viewMode,
+                                galleryMode = false,
                                 onViewModeSelected = { viewMode = it },
                                 onMenu = { scope.launch { drawerState.open() } },
                                 onRefresh = { load(search) }
@@ -1745,29 +2223,29 @@ class MainActivity : ComponentActivity() {
                         }
                         if (loading && allItems.isEmpty()) {
                             repeat(3) { index ->
-                                item(key = "loading-card-v2-$index") {
+                                item(key = "loading-card-v2-$index", contentType = "library-skeleton") {
                                     LoadingCardSkeletonV2(index)
                                 }
                             }
                         }
                         if (!loading && error == null && visibleItems.isEmpty()) {
-                            item { EmptyStateV2() }
+                            item(key = "library-empty", contentType = "library-empty") { EmptyStateV2() }
                         }
                         when (viewMode) {
                             LibraryViewMode.Large -> {
-                                items(visibleItems, key = { "large-${it.id}" }) { item ->
+                                items(visibleItems, key = { "large-${it.id}" }, contentType = { "library-large-card" }) { item ->
                                     MediaCardV2(
                                         serverUrl = serverUrl,
                                         token = token,
                                         item = item,
                                         controller = swipeController,
-                                        onOpen = { restart -> openItem(item, serverUrl, token, restart) },
+                                        onOpen = { restart -> openItem(item, serverUrl, token, restart, visibleItems) },
                                         onQuickAction = { action -> runQuickAction(item, action) }
                                     )
                                 }
                             }
                             LibraryViewMode.Grid -> {
-                                items(visibleItems.chunked(3), key = { row -> "grid-${row.firstOrNull()?.id ?: 0}" }) { rowItems ->
+                                items(visibleGridRows, key = { row -> "grid-${row.firstOrNull()?.id ?: 0}" }, contentType = { "library-grid-row" }) { rowItems ->
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1779,7 +2257,7 @@ class MainActivity : ComponentActivity() {
                                                 item = item,
                                                 controller = swipeController,
                                                 modifier = Modifier.weight(1f),
-                                                onOpen = { openItem(item, serverUrl, token, false) },
+                                                onOpen = { openItem(item, serverUrl, token, false, visibleItems) },
                                                 onQuickAction = { action -> runQuickAction(item, action) }
                                             )
                                         }
@@ -1790,18 +2268,36 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             LibraryViewMode.Detail -> {
-                                items(visibleItems, key = { "detail-${it.id}" }) { item ->
+                                items(visibleItems, key = { "detail-${it.id}" }, contentType = { "library-detail-row" }) { item ->
                                     MediaDetailRowV2(
                                         serverUrl = serverUrl,
                                         token = token,
                                         item = item,
                                         controller = swipeController,
-                                        onOpen = { restart -> openItem(item, serverUrl, token, restart) },
+                                        onOpen = { restart -> openItem(item, serverUrl, token, restart, visibleItems) },
                                         onQuickAction = { action -> runQuickAction(item, action) }
                                     )
                                 }
                             }
                         }
+                    }
+                    }
+
+                    AnimatedVisibility(
+                        visible = showBackToTopButton && !imageGalleryPinching,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 18.dp, bottom = 34.dp),
+                        enter = fadeIn(tween(120)) + scaleIn(
+                            initialScale = 0.88f,
+                            animationSpec = tween(150, easing = FastOutSlowInEasing)
+                        ),
+                        exit = fadeOut(tween(110)) + scaleOut(
+                            targetScale = 0.88f,
+                            animationSpec = tween(120, easing = FastOutSlowInEasing)
+                        )
+                    ) {
+                        BackToTopButtonV2(onClick = ::scrollLibraryToTop)
                     }
 
                     SnackbarHost(
@@ -2581,6 +3077,7 @@ class MainActivity : ComponentActivity() {
     private fun LibraryHeaderV2(
         loading: Boolean,
         viewMode: LibraryViewMode,
+        galleryMode: Boolean = false,
         onViewModeSelected: (LibraryViewMode) -> Unit,
         onMenu: () -> Unit,
         onRefresh: () -> Unit
@@ -2608,8 +3105,10 @@ class MainActivity : ComponentActivity() {
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            ViewModeIconButtonV2(viewMode = viewMode, onSelect = onViewModeSelected)
-            Spacer(Modifier.width(8.dp))
+            if (!galleryMode) {
+                ViewModeIconButtonV2(viewMode = viewMode, onSelect = onViewModeSelected)
+                Spacer(Modifier.width(8.dp))
+            }
             IconPillV2(onClick = onRefresh, enabled = !loading, contentDescription = "刷新") {
                 if (loading) {
                     CircularProgressIndicator(
@@ -3201,7 +3700,6 @@ class MainActivity : ComponentActivity() {
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .animateContentSize(animationSpec = spring(stiffness = 420f, dampingRatio = 0.86f))
                         .graphicsLayer {
                             scaleX = cardScale
                             scaleY = cardScale
@@ -3217,6 +3715,8 @@ class MainActivity : ComponentActivity() {
                                 url = coverUrl(serverUrl, token, item),
                                 label = mediaTypeLabelV2(item.mediaType),
                                 accent = accent,
+                                decodeWidthPx = 420,
+                                decodeHeightPx = 280,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .aspectRatio(1.50f)
@@ -3783,6 +4283,8 @@ class MainActivity : ComponentActivity() {
                             url = coverUrl(serverUrl, token, item),
                             label = mediaTypeLabelV2(item.mediaType),
                             accent = accent,
+                            decodeWidthPx = 220,
+                            decodeHeightPx = 320,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(0.70f)
@@ -3838,6 +4340,203 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun Modifier.imageGalleryPinchZoom(
+        enabled: Boolean,
+        onPinchStart: (Offset) -> Unit,
+        onPinch: (Float, Offset) -> Unit,
+        onPinchEnd: () -> Unit
+    ): Modifier {
+        if (!enabled) return this
+        return pointerInput(Unit) {
+            awaitEachGesture {
+                var pinching = false
+                var startDistance = 0f
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val pressed = event.changes.filter { it.pressed }
+                    if (pressed.size >= 2) {
+                        val first = pressed[0].position
+                        val second = pressed[1].position
+                        val distance = (first - second).getDistance()
+                        val focalPoint = (first + second) / 2f
+                        if (distance > 1f) {
+                            if (!pinching) {
+                                pinching = true
+                                startDistance = distance
+                                onPinchStart(focalPoint)
+                            } else {
+                                val scale = (distance / startDistance).coerceIn(0.45f, 2.40f)
+                                onPinch(scale, focalPoint)
+                            }
+                        }
+                        pressed.forEach { it.consume() }
+                    } else {
+                        if (pinching) {
+                            onPinchEnd()
+                            break
+                        }
+                        if (pressed.isEmpty()) break
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ImageGalleryTileV2(
+        coverUrl: String?,
+        label: String,
+        favorite: Boolean,
+        missing: Boolean,
+        tileDp: Float,
+        columns: Int,
+        interactionsEnabled: Boolean,
+        networkAllowedProvider: () -> Boolean,
+        requestRestartKey: Int,
+        onOpen: () -> Unit
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color.White.copy(alpha = 0.045f))
+                .clickable(
+                    enabled = interactionsEnabled,
+                    onClick = onOpen
+                )
+        ) {
+            RemoteGalleryThumbV2(
+                url = coverUrl,
+                label = label,
+                tileDp = tileDp,
+                columns = columns,
+                networkAllowedProvider = networkAllowedProvider,
+                requestRestartKey = requestRestartKey,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (favorite) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(3.dp)
+                        .size(if (tileDp < 70f) 16.dp else 20.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.52f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Star,
+                        contentDescription = "favorite",
+                        tint = Color(0xFFF6C46B),
+                        modifier = Modifier.size(if (tileDp < 70f) 10.dp else 13.dp)
+                    )
+                }
+            }
+            if (missing) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(Color(0xCCFF4E6A)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "缺失",
+                        modifier = Modifier.padding(vertical = if (tileDp < 70f) 1.dp else 2.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun RemoteGalleryThumbV2(
+        url: String?,
+        label: String,
+        tileDp: Float,
+        columns: Int,
+        networkAllowedProvider: () -> Boolean,
+        requestRestartKey: Int,
+        modifier: Modifier = Modifier
+    ) {
+        val density = LocalDensity.current
+        val targetPx = remember(tileDp, density) {
+            with(density) { tileDp.dp.toPx().roundToInt() }
+        }
+        val decodePx = remember(targetPx, columns) { imageGalleryDecodeBucketPx(targetPx, columns) }
+
+        Box(
+            modifier = modifier.background(Color(0xFF101623)),
+            contentAlignment = Alignment.Center
+        ) {
+            CoilCoverImage(
+                url = url,
+                label = label,
+                decodeWidthPx = decodePx,
+                decodeHeightPx = decodePx,
+                crossfadeMillis = 0,
+                networkAllowedProvider = networkAllowedProvider,
+                requestRestartKey = requestRestartKey,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+
+    @Composable
+    private fun ImageGallerySkeletonV2(index: Int) {
+        val alpha = remember(index) { 0.16f + (index % 5) * 0.025f }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color.White.copy(alpha = alpha))
+        )
+    }
+
+    @Composable
+    private fun BackToTopButtonV2(onClick: () -> Unit, modifier: Modifier = Modifier) {
+        val interactionSource = remember { MutableInteractionSource() }
+        val pressed by interactionSource.collectIsPressedAsState()
+        val scale by animateFloatAsState(
+            targetValue = if (pressed) 0.92f else 1f,
+            animationSpec = tween(120, easing = FastOutSlowInEasing),
+            label = "backToTopScale"
+        )
+
+        Surface(
+            modifier = modifier
+                .size(48.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                ),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            contentColor = MaterialTheme.colorScheme.primary,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+            shadowElevation = 10.dp
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.KeyboardArrowUp,
+                    contentDescription = "Back to top",
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
+    }
+
     @Composable
     private fun MediaDetailRowV2(
         serverUrl: String,
@@ -3880,6 +4579,8 @@ class MainActivity : ComponentActivity() {
                     url = coverUrl(serverUrl, token, item),
                     label = mediaTypeLabelV2(item.mediaType),
                     accent = accent,
+                    decodeWidthPx = 156,
+                    decodeHeightPx = 216,
                     modifier = Modifier
                         .width(78.dp)
                         .height(108.dp)
@@ -3964,11 +4665,16 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun RemoteCoverV2(url: String?, label: String, accent: Color, modifier: Modifier = Modifier) {
-        val bitmap by produceState<Bitmap?>(initialValue = cachedCover(url), key1 = url) {
-            if (url.isNullOrBlank() || value != null) return@produceState
-            value = withContext(Dispatchers.IO) { loadCoverBitmap(url) }
-        }
+    private fun RemoteCoverV2(
+        url: String?,
+        label: String,
+        accent: Color,
+        decodeWidthPx: Int = 240,
+        decodeHeightPx: Int = 340,
+        modifier: Modifier = Modifier
+    ) {
+        val decodeWidth = remember(decodeWidthPx) { coverDecodeBucketPx(decodeWidthPx) }
+        val decodeHeight = remember(decodeHeightPx) { coverDecodeBucketPx(decodeHeightPx) }
 
         Box(
             modifier = modifier
@@ -3985,21 +4691,19 @@ class MainActivity : ComponentActivity() {
                 .border(1.dp, Color.White.copy(alpha = 0.085f), RoundedCornerShape(24.dp)),
             contentAlignment = Alignment.Center
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap!!.asImageBitmap(),
-                    contentDescription = label,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Text(
-                    label,
-                    color = Color.White.copy(alpha = 0.72f),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Black
-                )
-            }
+            Text(
+                label,
+                color = Color.White.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Black
+            )
+            CoilCoverImage(
+                url = url,
+                label = label,
+                decodeWidthPx = decodeWidth,
+                decodeHeightPx = decodeHeight,
+                modifier = Modifier.fillMaxSize()
+            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -4499,8 +5203,16 @@ class MainActivity : ComponentActivity() {
         return "未观看"
     }
 
-    private fun openItem(item: MediaItem, serverUrl: String, token: String, restart: Boolean = false) {
-        val target = if (item.mediaType == "video") PlayerActivity::class.java else MangaActivity::class.java
+    private fun openItem(
+        item: MediaItem,
+        serverUrl: String,
+        token: String,
+        restart: Boolean = false,
+        playlist: List<MediaItem> = emptyList(),
+    ) {
+        val isVideo = item.mediaType == "video"
+        val target = if (isVideo) com.hemanager.mobile.player.PlayerActivity::class.java
+                     else MangaActivity::class.java
         startActivity(Intent(this, target).apply {
             putExtra("server_url", serverUrl)
             putExtra("token", token)
@@ -4511,6 +5223,10 @@ class MainActivity : ComponentActivity() {
             putExtra("duration", item.duration)
             putExtra("page_count", item.pageCount)
             if (restart) putExtra("restart", true)
+            if ((isVideo || item.mediaType == "image") && playlist.isNotEmpty()) {
+                val ids = playlist.filter { it.mediaType == item.mediaType }.map { it.id }.toIntArray()
+                if (ids.isNotEmpty()) putExtra("playlist_ids", ids)
+            }
         })
     }
 
@@ -4520,63 +5236,58 @@ class MainActivity : ComponentActivity() {
         return "$serverUrl/mobile/thumbnails/$cover?${ApiClient.tokenQuery(token)}"
     }
 
-    private fun cachedCover(url: String?): Bitmap? {
-        return if (url.isNullOrBlank()) null else coverCache.get(url)
+    private fun coverDecodeBucketPx(value: Int): Int {
+        return when {
+            value <= 96 -> 96
+            value <= 128 -> 128
+            value <= 160 -> 160
+            value <= 180 -> 180
+            value <= 240 -> 240
+            value <= 320 -> 320
+            else -> 420
+        }
     }
 
-    private suspend fun loadCoverBitmap(url: String): Bitmap? {
-        coverCache.get(url)?.let { return it }
-        val deferred = coverInFlightLock.withLock {
-            coverCache.get(url)?.let { return it }
-            coverInFlight[url]?.let { return@withLock it }
-            val newDeferred = CompletableDeferred<Bitmap?>()
-            coverInFlight[url] = newDeferred
-            null
+    private fun imageGalleryDecodeBucketPx(tilePx: Int, columns: Int): Int {
+        val targetPx = when {
+            columns >= 7 -> tilePx.coerceAtMost(128)
+            columns == 6 -> tilePx.coerceAtMost(160)
+            columns == 5 -> tilePx.coerceAtMost(180)
+            columns == 4 -> tilePx.coerceAtMost(220)
+            else -> tilePx.coerceAtMost(320)
         }
-        if (deferred != null) return deferred.await()
-
-        val owned = coverInFlight[url]!!
-        val result = runCatching {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 4000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("Accept", "image/*,*/*")
-            try {
-                val bytes = conn.inputStream.use { it.readBytes() }
-                val bitmap = decodeSampledBitmap(bytes, 240, 340)
-                if (bitmap != null) coverCache.put(url, bitmap)
-                bitmap
-            } finally {
-                conn.disconnect()
-            }
-        }.getOrNull()
-        coverInFlightLock.withLock { coverInFlight.remove(url) }
-        owned.complete(result)
-        return result
+        return coverDecodeBucketPx(targetPx)
     }
 
-    private fun decodeSampledBitmap(bytes: ByteArray, reqWidth: Int, reqHeight: Int): Bitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = calculateInSampleSize(bounds, reqWidth, reqHeight)
-            inPreferredConfig = Bitmap.Config.RGB_565
-        }
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    private fun coverCacheKey(url: String, reqWidth: Int, reqHeight: Int): String {
+        val stableUrl = url.substringBefore("?")
+        return "$stableUrl#${coverDecodeBucketPx(reqWidth)}x${coverDecodeBucketPx(reqHeight)}"
     }
 
-    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
-        val height = options.outHeight
-        val width = options.outWidth
-        var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2
-            val halfWidth = width / 2
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                inSampleSize *= 2
-            }
+    private fun coverImageRequest(
+        url: String,
+        reqWidth: Int,
+        reqHeight: Int,
+        crossfadeMillis: Int = 80,
+        networkAllowed: Boolean = true
+    ): ImageRequest {
+        val width = coverDecodeBucketPx(reqWidth)
+        val height = coverDecodeBucketPx(reqHeight)
+        val cacheKey = coverCacheKey(url, width, height)
+        val builder = ImageRequest.Builder(this)
+            .data(url)
+            .size(width, height)
+            .scale(Scale.FILL)
+            .precision(Precision.INEXACT)
+            .memoryCacheKey(cacheKey)
+            .diskCacheKey(cacheKey)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .networkCachePolicy(if (networkAllowed) CachePolicy.ENABLED else CachePolicy.DISABLED)
+        if (crossfadeMillis > 0) {
+            builder.crossfade(crossfadeMillis)
         }
-        return inSampleSize
+        return builder.build()
     }
 
     private fun greetingText(): String {
