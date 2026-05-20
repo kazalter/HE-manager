@@ -4,7 +4,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -21,6 +23,8 @@ import coil.size.Precision
 import coil.size.Scale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -248,11 +252,42 @@ class MainActivity : ComponentActivity() {
     // 颜色统一在 ui.theme.HeColors / HeColorScheme 中维护
     private val scheme = HeColorScheme
 
+    // -- 跨模块共享的 Activity 级状态（feature/library、feature/creators 等通过
+    //    `LocalContext.current as? MainActivity` 拿到并读写）。
+
+    /** 是否当前在「创作者」全屏页面上。CreatorsScreen 用 DisposableEffect 控制，决定状态栏显隐。 */
+    internal var creatorsScreenActive: Boolean = false
+
+    /** 左边缘滑动手势触发时调用的回调；由 LibraryScreen 在挂载时注册（指向 drawerState.open()）。 */
+    internal var edgeDrawerOpenRequester: (() -> Unit)? = null
+
+    /** 是否启用左边缘抽屉手势。LibraryScreen 挂载时设 true，卸载或图廊全屏时设 false。 */
+    internal var edgeDrawerGestureEnabled: Boolean = false
+
+    /** 图廊原生 RecyclerView 上 pinch 缩放正在进行中。Gallery 模块 OnItemTouchListener 设；
+     *  dispatchTouchEvent 读到为 true 时主动放弃边缘手势探测，避免双指误判。 */
+    internal var imageGalleryNativePinching: Boolean = false
+
+    // -- 边缘手势触摸跟踪（仅 dispatchTouchEvent 内部使用，保持 private）
+    private var edgeDrawerTracking: Boolean = false
+    private var edgeDrawerOpened: Boolean = false
+    private var edgeDrawerStartX: Float = 0f
+    private var edgeDrawerStartY: Float = 0f
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(7, 10, 18)
         window.navigationBarColor = android.graphics.Color.rgb(7, 10, 18)
+
+        // 刘海/挖孔屏：永远不让内容延伸进 cutout 区域。各 OEM 默认值不统一（状态栏隐藏后内容
+        // 可能滑到挖孔下面），显式钉死成 NEVER，挖孔区会保留一条背景色窄边而不是覆盖 UI。
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
+            }
+        }
 
         setContent {
             CompositionLocalProvider(LocalCoverImageLoader provides coverImageLoader) {
@@ -261,6 +296,110 @@ class MainActivity : ComponentActivity() {
                         HeManagerApp()
                     }
                 }
+            }
+        }
+
+        // 状态栏只在库主页等场景显示；创作者页面进入时由 CreatorsScreen 自己切隐藏。
+        // 这里按当前 creatorsScreenActive（默认 false）应用一次初始状态。
+        setStatusBarHidden(creatorsScreenActive)
+        // 在左边沿注册系统手势排除区，让 Android 10+ 的返回手势不会吃掉左边缘滑动。
+        applyDrawerEdgeExclusion()
+    }
+
+    // ------------------------------------------------------------------------
+    // 全局触摸分发：左边缘滑动开抽屉
+    // ------------------------------------------------------------------------
+    // 在 ComponentActivity 顶层拦截：从左边缘 56dp 内按下、向右滑超过 32dp 时，
+    // 触发 edgeDrawerOpenRequester 回调（由 LibraryScreen 注入）。
+    //
+    // 谨慎让出：
+    //   - 多指（pinch）：直接放过，让 RecyclerView 自己处理缩放
+    //   - 图廊正在原生 pinch：让出
+    //   - 垂直分量明显大于水平（用户在滚列表）：让出
+    //   - 反向左滑：让出
+    //
+    // 这块逻辑必须在 ComponentActivity 层而不是 Compose 层，因为目标是「跨 composable 全局
+    // 都能从左边沿开抽屉」，不限于 LibraryScreen 内部的可点击区域。
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (!edgeDrawerGestureEnabled || imageGalleryNativePinching || event.pointerCount > 1) {
+            edgeDrawerTracking = false
+            edgeDrawerOpened = false
+            return super.dispatchTouchEvent(event)
+        }
+
+        val density = resources.displayMetrics.density
+        val edgeWidthPx = 56f * density
+        val openDistancePx = 32f * density
+        val touchSlopPx = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                edgeDrawerTracking = event.x <= edgeWidthPx
+                edgeDrawerOpened = false
+                edgeDrawerStartX = event.x
+                edgeDrawerStartY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (edgeDrawerTracking) {
+                    val dx = event.x - edgeDrawerStartX
+                    val dy = event.y - edgeDrawerStartY
+                    val absDx = abs(dx)
+                    val absDy = abs(dy)
+
+                    // 仅在 Y 明显主导时才放弃跟踪，保护垂直列表滚动。
+                    if (absDy > absDx * 1.5f && absDy > touchSlopPx * 2) {
+                        edgeDrawerTracking = false
+                    } else if (dx < -touchSlopPx) {
+                        edgeDrawerTracking = false
+                    } else if (dx > openDistancePx && absDx > absDy * 1.1f) {
+                        edgeDrawerTracking = false
+                        edgeDrawerOpened = true
+                        edgeDrawerOpenRequester?.invoke()
+                        return true
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val consume = edgeDrawerOpened
+                edgeDrawerTracking = false
+                edgeDrawerOpened = false
+                if (consume) return true
+            }
+        }
+
+        return super.dispatchTouchEvent(event)
+    }
+
+    /** 显示或隐藏顶部状态栏（仅本 Activity 的 window）。隐藏时支持顶部下滑短暂显示。 */
+    internal fun setStatusBarHidden(hidden: Boolean) {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (hidden) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 系统在 focus 变化时（旋转、前后台切换）有时会清掉 systemGestureExclusionRects，
+        // 也可能重置状态栏。重新应用一次以保持一致。
+        if (hasFocus) {
+            setStatusBarHidden(creatorsScreenActive)
+            applyDrawerEdgeExclusion()
+        }
+    }
+
+    private fun applyDrawerEdgeExclusion() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return
+        val decor = window.decorView
+        decor.post {
+            val edge = (56f * resources.displayMetrics.density).toInt()
+            val height = decor.height
+            if (edge > 0 && height > 0) {
+                decor.systemGestureExclusionRects = listOf(android.graphics.Rect(0, 0, edge, height))
             }
         }
     }

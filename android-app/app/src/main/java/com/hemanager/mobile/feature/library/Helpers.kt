@@ -485,3 +485,64 @@ internal fun formatDuration(seconds: Int): String {
         String.format(Locale.ROOT, "%d:%02d", minutes, secs)
     }
 }
+
+// ---------------------------------------------------------------------------
+// 图廊瓦片大小 / 列数互换工具
+// ---------------------------------------------------------------------------
+// Gallery 模块的网格在 pinch-to-zoom 期间需要在「瓦片 dp 大小」和「列数」之间
+// 来回换算（列数才是用户偏好的稳定单位，但绘制阶段需要瓦片大小驱动 ItemDecoration
+// 和 measure 阶段）。这些函数是纯数学，没有 Compose 或 Android 依赖，方便测试。
+//
+// 参数定义：
+//   availableWidthDp：RecyclerView 可用宽度（已扣除 padding）的 dp 值
+//   gapDp：相邻瓦片之间的间距
+//   columns：列数；调用方负责把它 clamp 到 [imageGalleryMinColumns, imageGalleryMaxColumns]
+
+/** 给定列数反推每个瓦片的边长 dp。 */
+internal fun imageGalleryTileForColumns(availableWidthDp: Float, gapDp: Float, columns: Int): Float {
+    return ((availableWidthDp - gapDp * (columns - 1)) / columns).coerceAtLeast(1f)
+}
+
+/**
+ * 给定一个自由瓦片 dp，吸附到「最近的列数对应的瓦片 dp」。
+ * pinch 松手后用来 snap 到稳定状态。
+ */
+internal fun nearestImageGalleryPreset(sizeDp: Float, availableWidthDp: Float, gapDp: Float): Float {
+    return (imageGalleryMinColumns..imageGalleryMaxColumns)
+        .map { columns -> imageGalleryTileForColumns(availableWidthDp, gapDp, columns) }
+        .minByOrNull { abs(it - sizeDp) }
+        ?: imageGalleryTileForColumns(availableWidthDp, gapDp, 5)
+}
+
+/**
+ * 给定瓦片 dp 推断目标列数。可选 hysteresis（迟滞）防止用户在阈值附近抖动时列数反复跳。
+ *
+ * 迟滞规则：仅当瓦片大小越过「两个相邻列数的瓦片中点 ± switchMargin」才切换，避免边界抖。
+ *
+ * @param withHysteresis 默认按"最近列数"硬切；为 true 时启用迟滞，需要传 [currentColumns]。
+ */
+internal fun imageGalleryColumnsForTile(
+    sizeDp: Float,
+    availableWidthDp: Float,
+    gapDp: Float,
+    currentColumns: Int,
+    withHysteresis: Boolean
+): Int {
+    val rawColumns = floor((availableWidthDp + gapDp) / (sizeDp + gapDp))
+        .toInt()
+        .coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+    if (!withHysteresis) return rawColumns
+
+    val current = currentColumns.coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+    if (rawColumns == current) return current
+
+    val currentTile = imageGalleryTileForColumns(availableWidthDp, gapDp, current)
+    val targetTile = imageGalleryTileForColumns(availableWidthDp, gapDp, rawColumns)
+    val midpoint = (currentTile + targetTile) / 2f
+    val switchMarginDp = 3.5f
+    return if (rawColumns < current) {
+        if (sizeDp >= midpoint + switchMarginDp) rawColumns else current
+    } else {
+        if (sizeDp <= midpoint - switchMarginDp) rawColumns else current
+    }
+}

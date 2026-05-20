@@ -48,12 +48,33 @@ class HePrefs(context: Context) {
     /**
      * 图片库网格瓦片的稳定 dp 大小（受 pinch-to-zoom 影响）。
      * 默认 [DEFAULT_GALLERY_TILE_DP]。
+     *
+     * **注意**：从 column-count 模型上线后这只用于一次性迁移（见 [galleryColumns]），
+     * 新逻辑应优先用 [galleryColumns]。
      */
     var galleryTileDp: Float
         get() = prefs.getFloat(KEY_GALLERY_TILE_DP, DEFAULT_GALLERY_TILE_DP)
         set(value) {
             prefs.edit().putFloat(KEY_GALLERY_TILE_DP, value).apply()
         }
+
+    /**
+     * 图片库网格的稳定列数（pinch-to-zoom 在松手时 snap 到的目标）。
+     * 默认 [DEFAULT_GALLERY_COLUMNS]。
+     *
+     * 取值范围由调用方约束（典型 3..7），HePrefs 不强校验，只负责持久化。
+     * 迁移：若该 key 不存在（[hasGalleryColumns] 为 false），调用方应根据 [galleryTileDp] +
+     * 屏幕宽度推导一个初始列数并 set，使旧用户体感不跳变。
+     */
+    var galleryColumns: Int
+        get() = prefs.getInt(KEY_GALLERY_COLUMNS, DEFAULT_GALLERY_COLUMNS)
+        set(value) {
+            prefs.edit().putInt(KEY_GALLERY_COLUMNS, value).apply()
+        }
+
+    /** [galleryColumns] 是否已显式写入过（用于一次性迁移判断）。 */
+    val hasGalleryColumns: Boolean
+        get() = prefs.contains(KEY_GALLERY_COLUMNS)
 
     /** 保存一次登录得到的 (server, token) 组合。 */
     fun saveCredentials(serverUrl: String, token: String) {
@@ -73,7 +94,9 @@ class HePrefs(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_TOKEN = "token"
         private const val KEY_GALLERY_TILE_DP = "mobile_image_gallery_tile_dp"
+        private const val KEY_GALLERY_COLUMNS = "mobile_image_gallery_columns"
 
         const val DEFAULT_GALLERY_TILE_DP = 78f
+        const val DEFAULT_GALLERY_COLUMNS = 5
     }
 }
