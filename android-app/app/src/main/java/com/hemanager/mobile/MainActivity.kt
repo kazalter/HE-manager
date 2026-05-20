@@ -208,6 +208,7 @@ import com.hemanager.mobile.data.image.coverImageRequest
 import com.hemanager.mobile.data.image.imageGalleryDecodeBucketPx
 import com.hemanager.mobile.data.image.imageGalleryPlaceholderColor
 import com.hemanager.mobile.data.image.isCoverInMemory
+import com.hemanager.mobile.feature.creators.CreatorsScreen
 import com.hemanager.mobile.feature.library.LibraryScreenV2
 import com.hemanager.mobile.feature.login.LoginScreen
 import com.hemanager.mobile.ui.components.BrandMark
@@ -537,14 +538,29 @@ class MainActivity : ComponentActivity() {
                 }
             )
         } else {
-            LibraryScreenV2(
-                serverUrl = serverUrl,
-                token = token,
-                onLogout = {
-                    prefs.clearToken()
-                    token = ""
-                }
-            )
+            // rememberSaveable：creators 屏幕标志要跨 Activity 重建保留（config 改、
+            // process death after 打开重型播放器 Activity）。普通 remember 在返回路径
+            // 上 reset 为 false，会掉到 library 根，再一次返回直接退 App。
+            var showCreators by androidx.compose.runtime.saveable.rememberSaveable {
+                mutableStateOf(false)
+            }
+            if (showCreators) {
+                CreatorsScreen(
+                    serverUrl = serverUrl,
+                    token = token,
+                    onBack = { showCreators = false }
+                )
+            } else {
+                LibraryScreenV2(
+                    serverUrl = serverUrl,
+                    token = token,
+                    onOpenCreators = { showCreators = true },
+                    onLogout = {
+                        prefs.clearToken()
+                        token = ""
+                    }
+                )
+            }
         }
     }
 }

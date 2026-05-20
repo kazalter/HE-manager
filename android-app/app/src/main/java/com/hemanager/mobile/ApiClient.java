@@ -120,6 +120,34 @@ public class ApiClient {
         return items;
     }
 
+    /** 列出所有创作者（按类型筛 / 模糊搜索 / 排序）。后端：GET /mobile/creators */
+    public List<Creator> getCreators(String typeFilter, String search, String sort) throws Exception {
+        Uri.Builder builder = Uri.parse(baseUrl + "/mobile/creators").buildUpon();
+        if (typeFilter != null && !typeFilter.isEmpty() && !"all".equals(typeFilter)) {
+            builder.appendQueryParameter("kind", typeFilter);
+        }
+        if (search != null && !search.trim().isEmpty()) {
+            builder.appendQueryParameter("search", search.trim());
+        }
+        if (sort != null && !sort.isEmpty()) {
+            builder.appendQueryParameter("sort", sort);
+        }
+        JSONArray array = getJsonArray(builder.build().toString().substring(baseUrl.length()));
+        List<Creator> creators = new ArrayList<>();
+        for (int i = 0; i < array.length(); i++) {
+            creators.add(Creator.fromJson(array.getJSONObject(i)));
+        }
+        return creators;
+    }
+
+    /** 单个创作者详情（含作品列表）。后端：GET /mobile/creators/detail?key=... */
+    public CreatorDetail getCreatorDetail(String key) throws Exception {
+        Uri.Builder builder = Uri.parse(baseUrl + "/mobile/creators/detail").buildUpon();
+        builder.appendQueryParameter("key", key == null ? "" : key);
+        JSONObject json = getJsonObject(builder.build().toString().substring(baseUrl.length()));
+        return CreatorDetail.fromJson(json);
+    }
+
     private HttpURLConnection open(String path, String method, boolean auth) throws Exception {
         URL url = new URL(baseUrl + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();

@@ -244,6 +244,7 @@ internal fun AppDrawerV2(
     onStatusSelected: (String) -> Unit,
     onRefresh: () -> Unit,
     onSettings: () -> Unit,
+    onOpenCreators: () -> Unit,
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -306,11 +307,9 @@ internal fun AppDrawerV2(
                             onClick = { onStatusSelected("favorite") }
                         )
                         DrawerNavItemV2(
-                            label = "作者 / 标签",
+                            label = "创作者",
                             icon = Icons.Default.LocalOffer,
-                            onClick = {
-                                context.toastComingSoon("作者/标签")
-                            }
+                            onClick = onOpenCreators
                         )
                         DrawerNavItemV2(
                             label = "文件夹",

@@ -1,0 +1,34 @@
+# Hand-authored baseline profile (broad, wildcard).
+#
+# Purpose: AOT-compile the startup + first-screen hot paths at install time so
+# the first cold start no longer pays JIT warmup — the root cause of "janky
+# right after entering the app, smooth a few seconds later".
+#
+# Flags: H=hot, S=startup, P=post-startup. `**` wildcards are expanded by
+# AGP's profile compiler (profgen). This is broader than a device-generated
+# profile and therefore a bit less precise, but it covers everything the cold
+# start touches (app code, Compose, the RecyclerView list, Coil image load,
+# coroutines) and removes the bulk of the warmup jank. Only applied to the
+# non-debuggable release build.
+#
+# Upgrade path: replace with a device-generated profile via the
+# androidx.baselineprofile plugin + a macrobenchmark module for optimal
+# precision.
+
+HSPLcom/hemanager/mobile/**->**(**)**
+HSPLandroidx/compose/runtime/**->**(**)**
+HSPLandroidx/compose/ui/**->**(**)**
+HSPLandroidx/compose/foundation/**->**(**)**
+HSPLandroidx/compose/material3/**->**(**)**
+HSPLandroidx/compose/material/**->**(**)**
+HSPLandroidx/compose/animation/**->**(**)**
+HSPLandroidx/activity/**->**(**)**
+HSPLandroidx/lifecycle/**->**(**)**
+HSPLandroidx/recyclerview/**->**(**)**
+HSPLandroidx/viewpager2/**->**(**)**
+HSPLandroidx/datastore/**->**(**)**
+HSPLkotlin/**->**(**)**
+HSPLkotlinx/coroutines/**->**(**)**
+HSPLcoil/**->**(**)**
+HSPLokhttp3/**->**(**)**
+HSPLokio/**->**(**)**

@@ -333,8 +333,14 @@ internal fun openItem(
     playlist: List<MediaItem> = emptyList(),
 ) {
     val isVideo = item.mediaType == "video"
-    val target = if (isVideo) com.hemanager.mobile.player.PlayerActivity::class.java
-                 else MangaActivity::class.java
+    val isAudio = item.mediaType == "audio"
+    // 音频走独立的 ASMR 播放器（Media3 service-based 后台播放）；视频走 PlayerActivity；
+    // 其他（漫画/图片）走 MangaActivity（图片借用漫画查看器的翻页能力）。
+    val target = when {
+        isVideo -> com.hemanager.mobile.player.PlayerActivity::class.java
+        isAudio -> com.hemanager.mobile.audio.AudioPlayerActivity::class.java
+        else -> MangaActivity::class.java
+    }
     context.startActivity(Intent(context, target).apply {
         putExtra("server_url", serverUrl)
         putExtra("token", token)
@@ -355,7 +361,17 @@ internal fun openItem(
 internal fun coverUrl(serverUrl: String, token: String, item: MediaItem): String? {
     val cover = item.coverPath
     if (cover.isNullOrBlank() || cover == "null") return null
-    return "$serverUrl/mobile/thumbnails/$cover?${ApiClient.tokenQuery(token)}"
+    // URL-encode the path so that thumbnails with non-ASCII characters (e.g. Japanese
+    // dirname containing parens, brackets, CJK) reach the server intact.
+    val encoded = android.net.Uri.encode(cover, "")
+    return "$serverUrl/mobile/thumbnails/$encoded?${ApiClient.tokenQuery(token)}"
+}
+
+/** 创作者头像 URL（封面路径走 mobile/thumbnails，独立于 MediaItem.coverPath）。 */
+internal fun creatorThumbUrl(serverUrl: String, token: String, coverPath: String?): String? {
+    if (coverPath.isNullOrBlank() || coverPath == "null") return null
+    val encoded = android.net.Uri.encode(coverPath, "")
+    return "$serverUrl/mobile/thumbnails/$encoded?${ApiClient.tokenQuery(token)}"
 }
 
 

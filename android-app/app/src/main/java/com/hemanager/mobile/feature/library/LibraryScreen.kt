@@ -164,6 +164,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -293,6 +294,7 @@ internal fun CoilCoverImage(
 internal fun LibraryScreenV2(
     serverUrl: String,
     token: String,
+    onOpenCreators: () -> Unit,
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -324,6 +326,21 @@ internal fun LibraryScreenV2(
     var viewMode by remember { mutableStateOf(LibraryViewMode.Large) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var filterSheetOpen by remember { mutableStateOf(false) }
+
+    // 接 MainActivity 的左边缘滑动手势：注册回调让 dispatchTouchEvent 探测到边缘手势时
+    // 能打开本屏幕的 drawer。LibraryScreen 卸载时（导航到 CreatorsScreen 等）清掉，
+    // 避免边缘手势在不该有抽屉的页面尝试调用过期的 drawerState。
+    val mainActivity = context as? com.hemanager.mobile.MainActivity
+    DisposableEffect(mainActivity, drawerState, scope) {
+        mainActivity?.edgeDrawerOpenRequester = {
+            scope.launch { drawerState.open() }
+        }
+        mainActivity?.edgeDrawerGestureEnabled = true
+        onDispose {
+            mainActivity?.edgeDrawerGestureEnabled = false
+            mainActivity?.edgeDrawerOpenRequester = null
+        }
+    }
     var tagSheetItem by remember { mutableStateOf<MediaItem?>(null) }
     // Pending optimistic-deletes — keyed by media id so concurrent deletes don't collide.
     val pendingDeletes = remember { mutableStateMapOf<Int, Job>() }
@@ -833,6 +850,10 @@ internal fun LibraryScreenV2(
                 onSettings = {
                     scope.launch { drawerState.close() }
                     context.toastComingSoon("设置")
+                },
+                onOpenCreators = {
+                    scope.launch { drawerState.close() }
+                    onOpenCreators()
                 },
                 onLogout = {
                     scope.launch { drawerState.close() }
