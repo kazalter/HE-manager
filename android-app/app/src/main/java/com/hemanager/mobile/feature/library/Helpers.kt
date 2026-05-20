@@ -1,5 +1,17 @@
-package com.hemanager.mobile
+package com.hemanager.mobile.feature.library
 
+// Library 模块复用的纯函数 / 半纯函数集合：颜色映射、文本格式化、URL 拼装等。
+// 这些函数大多没有 state，可以独立测试。
+//
+// 命名约定：
+//   - 不带 V2 后缀的（filterAccent/typeAccent/progressColor 等）：通用版本
+//   - 带 V2 后缀的（statusAccentV2/progressColorV2 等）：V2 重写时新增的语义版本
+// 未来可考虑合并语义同步去掉 V2 后缀。
+
+import com.hemanager.mobile.ApiClient
+import com.hemanager.mobile.MangaActivity
+import com.hemanager.mobile.MediaItem
+import com.hemanager.mobile.TagItem
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -204,7 +216,6 @@ import com.hemanager.mobile.data.image.coverImageRequest
 import com.hemanager.mobile.data.image.imageGalleryDecodeBucketPx
 import com.hemanager.mobile.data.image.imageGalleryPlaceholderColor
 import com.hemanager.mobile.data.image.isCoverInMemory
-import com.hemanager.mobile.feature.library.LibraryScreenV2
 import com.hemanager.mobile.feature.login.LoginScreen
 import com.hemanager.mobile.ui.components.BrandMark
 import com.hemanager.mobile.ui.components.GlassPanel
@@ -225,70 +236,252 @@ import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
-class MainActivity : ComponentActivity() {
-    private val coverImageLoader: ImageLoader by lazy {
-        ImageLoader.Builder(this)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .networkCachePolicy(CachePolicy.ENABLED)
-            .memoryCache {
-                MemoryCache.Builder(this)
-                    .maxSizePercent(0.24)
-                    .build()
-            }
-            .diskCache {
-                DiskCache.Builder()
-                    .directory(cacheDir.resolve("coil_cover_cache"))
-                    .maxSizeBytes(256L * 1024L * 1024L)
-                    .build()
-            }
-            .build()
+@Composable
+internal fun statusAccentV2(value: String): Color {
+    return when (value) {
+        "viewing" -> MaterialTheme.colorScheme.primary
+        "favorite" -> Color(0xFFF6C46B)
+        "viewed" -> Color(0xFF58E6C2)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+}
 
-    // 颜色统一在 ui.theme.HeColors / HeColorScheme 中维护
-    private val scheme = HeColorScheme
-
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        window.statusBarColor = android.graphics.Color.rgb(7, 10, 18)
-        window.navigationBarColor = android.graphics.Color.rgb(7, 10, 18)
-
-        setContent {
-            CompositionLocalProvider(LocalCoverImageLoader provides coverImageLoader) {
-                MaterialTheme(colorScheme = scheme) {
-                    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                        HeManagerApp()
-                    }
-                }
-            }
-        }
+@Composable
+internal fun progressColorV2(item: MediaItem): Color {
+    return when {
+        item.missing -> Color(0xFFFF8CA3)
+        item.viewStatus == "viewed" -> Color(0xFF58E6C2)
+        item.viewStatus == "viewing" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+}
 
-    @Composable
-    private fun HeManagerApp() {
-        val prefs = remember { HePrefs(this) }
-        var serverUrl by remember { mutableStateOf(prefs.serverUrl) }
-        var token by remember { mutableStateOf(prefs.token) }
+internal fun matchesStatusV2(item: MediaItem, value: String): Boolean {
+    return when (value) {
+        "viewing" -> item.viewStatus == "viewing"
+        "favorite" -> item.favorite
+        "viewed" -> item.viewStatus == "viewed"
+        else -> true
+    }
+}
 
-        if (serverUrl.isBlank() || token.isBlank()) {
-            LoginScreen(
-                initialServer = serverUrl,
-                onLoggedIn = { nextServer, nextToken ->
-                    serverUrl = nextServer
-                    token = nextToken
-                    prefs.saveCredentials(nextServer, nextToken)
-                }
-            )
-        } else {
-            LibraryScreenV2(
-                serverUrl = serverUrl,
-                token = token,
-                onLogout = {
-                    prefs.clearToken()
-                    token = ""
-                }
-            )
+internal fun countForStatusV2(items: List<MediaItem>, value: String): Int {
+    return items.count { matchesStatusV2(it, value) }
+}
+
+internal fun serverHostV2(serverUrl: String): String {
+    return ApiClient.trimSlash(serverUrl)
+        .removePrefix("http://")
+        .removePrefix("https://")
+}
+
+internal fun mediaTypeLabelV2(type: String?): String {
+    return when (type) {
+        "video" -> "视频"
+        "manga" -> "漫画"
+        "image" -> "图片"
+        else -> "媒体"
+    }
+}
+
+internal fun mediaMetaChipsV2(item: MediaItem): List<String> {
+    return listOf(
+        cleanExtensionV2(item.extension),
+        item.duration.takeIf { it > 0 }?.let { formatDuration(it) } ?: "",
+        item.pageCount.takeIf { it > 0 }?.let { "${it} 页" } ?: "",
+        item.rating.takeIf { it > 0 }?.let { "${it} 星" } ?: ""
+    ).filter { it.isNotBlank() }
+}
+
+internal fun cleanExtensionV2(extension: String?): String {
+    val raw = extension?.takeIf { it.isNotBlank() && it != "null" } ?: return ""
+    val normalized = raw.lowercase(Locale.ROOT).removePrefix(".")
+    if (normalized == "dir") return ""
+    return raw.uppercase(Locale.ROOT)
+}
+
+internal fun metaInlineV2(item: MediaItem): String {
+    val parts = mutableListOf<String>()
+    parts += mediaTypeLabelV2(item.mediaType)
+    cleanExtensionV2(item.extension).takeIf { it.isNotBlank() }?.let { parts += it }
+    if (item.duration > 0) parts += formatDuration(item.duration)
+    if (item.pageCount > 0) parts += "${item.pageCount}P"
+    parts += progressTextV2(item)
+    return parts.joinToString(" · ")
+}
+
+internal fun progressTextV2(item: MediaItem): String {
+    if (item.viewStatus == "viewed") return "已看完"
+    if (item.viewStatus == "viewing") {
+        if (item.mediaType == "manga" && item.pageCount > 0) {
+            return "第 ${minOf(item.progress + 1, item.pageCount)} / ${item.pageCount} 页"
         }
+        if (item.mediaType == "video" && item.progress > 0) {
+            return "看到 ${formatDuration(item.progress)}"
+        }
+        return "继续看"
+    }
+    return "未观看"
+}
+
+internal fun openItem(
+    context: android.content.Context,
+    item: MediaItem,
+    serverUrl: String,
+    token: String,
+    restart: Boolean = false,
+    playlist: List<MediaItem> = emptyList(),
+) {
+    val isVideo = item.mediaType == "video"
+    val target = if (isVideo) com.hemanager.mobile.player.PlayerActivity::class.java
+                 else MangaActivity::class.java
+    context.startActivity(Intent(context, target).apply {
+        putExtra("server_url", serverUrl)
+        putExtra("token", token)
+        putExtra("id", item.id)
+        putExtra("title", item.title)
+        putExtra("media_type", item.mediaType)
+        putExtra("progress", item.progress)
+        putExtra("duration", item.duration)
+        putExtra("page_count", item.pageCount)
+        if (restart) putExtra("restart", true)
+        if ((isVideo || item.mediaType == "image") && playlist.isNotEmpty()) {
+            val ids = playlist.filter { it.mediaType == item.mediaType }.map { it.id }.toIntArray()
+            if (ids.isNotEmpty()) putExtra("playlist_ids", ids)
+        }
+    })
+}
+
+internal fun coverUrl(serverUrl: String, token: String, item: MediaItem): String? {
+    val cover = item.coverPath
+    if (cover.isNullOrBlank() || cover == "null") return null
+    return "$serverUrl/mobile/thumbnails/$cover?${ApiClient.tokenQuery(token)}"
+}
+
+
+internal fun logImageGalleryPerf(message: String) {
+    Log.d(imageGalleryPerfLogTag, message)
+}
+
+internal fun greetingText(): String {
+    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    return when (hour) {
+        in 5..10 -> "早上好"
+        in 11..13 -> "中午好"
+        in 14..17 -> "下午好"
+        in 18..23 -> "晚上好"
+        else -> "夜深了"
+    }
+}
+
+internal fun countForFilter(items: List<MediaItem>, value: String): Int {
+    return if (value.isBlank()) items.size else items.count { it.mediaType == value }
+}
+
+internal fun summary(items: List<MediaItem>): String {
+    val videos = items.count { it.mediaType == "video" }
+    val manga = items.count { it.mediaType == "manga" }
+    val images = items.count { it.mediaType == "image" }
+    return listOf(
+        "${items.size}个条目",
+        if (videos > 0) "${videos}视频" else "",
+        if (manga > 0) "${manga}漫画" else "",
+        if (images > 0) "${images}图片" else ""
+    ).filter { it.isNotBlank() }.joinToString(" / ")
+}
+
+internal fun meta(item: MediaItem): String {
+    return listOf(
+        typeLabel(item.mediaType),
+        item.extension?.takeIf { it.isNotBlank() }?.uppercase(Locale.ROOT) ?: "",
+        item.duration.takeIf { it > 0 }?.let { formatDuration(it) } ?: "",
+        item.pageCount.takeIf { it > 0 }?.let { "${it}页" } ?: "",
+        if (item.favorite) "收藏" else "",
+        item.rating.takeIf { it > 0 }?.let { "${it}星" } ?: ""
+    ).filter { it.isNotBlank() }.joinToString(" / ")
+}
+
+internal fun progressText(item: MediaItem): String {
+    if (item.viewStatus == "viewed") return "已看完"
+    if (item.viewStatus == "viewing") {
+        if (item.mediaType == "manga" && item.pageCount > 0) {
+            return "第 ${minOf(item.progress + 1, item.pageCount)} / ${item.pageCount} 页"
+        }
+        if (item.mediaType == "video" && item.progress > 0) {
+            return "看到 ${formatDuration(item.progress)}"
+        }
+        return "正在看"
+    }
+    return "未观看"
+}
+
+internal fun progressFraction(item: MediaItem): Float? {
+    if (item.viewStatus == "viewed") return 1f
+    if (item.viewStatus != "viewing") return null
+    val fraction = when {
+        item.mediaType == "manga" && item.pageCount > 0 -> (item.progress + 1).toFloat() / item.pageCount.toFloat()
+        item.mediaType == "video" && item.duration > 0 -> item.progress.toFloat() / item.duration.toFloat()
+        else -> return null
+    }
+    return fraction.coerceIn(0.02f, 1f)
+}
+
+@Composable
+internal fun filterAccent(value: String): Color {
+    return when (value) {
+        "video" -> MaterialTheme.colorScheme.secondary
+        "manga" -> MaterialTheme.colorScheme.tertiary
+        "image" -> Color(0xFFFF8FA3)
+        else -> MaterialTheme.colorScheme.primary
+    }
+}
+
+@Composable
+internal fun typeAccent(type: String?): Color {
+    return when (type) {
+        "video" -> MaterialTheme.colorScheme.secondary
+        "manga" -> MaterialTheme.colorScheme.tertiary
+        "image" -> Color(0xFFFF8FA3)
+        else -> MaterialTheme.colorScheme.primary
+    }
+}
+
+@Composable
+internal fun progressColor(item: MediaItem): Color {
+    return when {
+        item.missing -> Color(0xFFFF8FA3)
+        item.viewStatus == "viewed" -> MaterialTheme.colorScheme.secondary
+        item.viewStatus == "viewing" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+}
+
+internal fun readableError(error: Throwable): String {
+    val message = error.message ?: return "读取失败"
+    return when {
+        message.contains("Failed to connect", ignoreCase = true) -> "无法连接服务器，请确认电脑端服务已启动"
+        message.contains("timeout", ignoreCase = true) -> "连接超时，请检查网络或服务器地址"
+        else -> message
+    }
+}
+
+internal fun typeLabel(type: String?): String {
+    return when (type) {
+        "video" -> "视频"
+        "manga" -> "漫画"
+        "image" -> "图片"
+        else -> "媒体"
+    }
+}
+
+internal fun formatDuration(seconds: Int): String {
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = total % 3600 / 60
+    val secs = total % 60
+    return if (hours > 0) {
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, secs)
+    } else {
+        String.format(Locale.ROOT, "%d:%02d", minutes, secs)
     }
 }

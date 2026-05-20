@@ -1,54 +1,48 @@
 package com.hemanager.mobile.player.ui
 
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.hemanager.mobile.ui.theme.HeColorScheme
+import com.hemanager.mobile.ui.theme.HeColors
 
 /**
- * Color palette for the player. Mirrors the values declared in [com.hemanager.mobile.MainActivity.scheme]
- * so the player feels visually continuous with the rest of the app.
+ * Player 模块色板入口。
  *
- * Why duplicated: MainActivity's scheme is private to the activity. Re-declaring here as
- * top-level constants keeps the player module self-contained without making MainActivity's
- * theme public surface. If these ever drift, both should be moved to a shared theme module.
+ * 历史原因，player 包里大量代码引用 [PlayerColors.Primary] / [PlayerColors.ScrimTop] 等常量。
+ * 这些值现在统一在 [HeColors] 维护；此对象只是薄转发壳，保留 API 不破坏现有代码。
+ *
+ * 新代码建议直接 import [com.hemanager.mobile.ui.theme.HeColors]。
  */
 object PlayerColors {
-    val Primary = Color(0xFF8EA2FF)
-    val Secondary = Color(0xFF58E6C2)
-    val Tertiary = Color(0xFFF6C46B)
-    val Background = Color(0xFF070A12)
-    val Surface = Color(0xFF111620)
-    val SurfaceVariant = Color(0xFF202838)
-    val PrimaryContainer = Color(0xFF28336D)
-    val OnSurface = Color(0xFFF4F7FF)
-    val OnSurfaceVariant = Color(0xFFC6CFDD)
-    val OnSurfaceMuted = Color(0xB3F4F7FF)
-    val Danger = Color(0xFFFF8FA3)
+    // ---- 主色 ----
+    val Primary: Color get() = HeColors.Primary
+    val Secondary: Color get() = HeColors.Secondary
+    val Tertiary: Color get() = HeColors.Tertiary
 
-    // Translucent overlays for control surfaces atop the video.
-    val ScrimTop = Brush.verticalGradient(
-        listOf(Color(0xCC000000), Color(0x00000000)),
-    )
-    val ScrimBottom = Brush.verticalGradient(
-        listOf(Color(0x00000000), Color(0xDD000000)),
-    )
+    // ---- 表面 ----
+    val Background: Color get() = HeColors.Background
+    val Surface: Color get() = HeColors.Surface
+    val SurfaceVariant: Color get() = HeColors.SurfaceVariant
+    val PrimaryContainer: Color get() = HeColors.PrimaryContainer
 
-    val ButtonGlass = Color(0x66000000)
-    val ButtonGlassPressed = Color(0xAA000000)
+    // ---- 前景 ----
+    val OnSurface: Color get() = HeColors.OnSurface
+    val OnSurfaceVariant: Color get() = HeColors.OnSurfaceVariant
+    val OnSurfaceMuted: Color get() = HeColors.OnSurfaceMuted
+
+    // ---- 语义 ----
+    val Danger: Color get() = HeColors.Danger
+
+    // ---- Player 专用蒙层 ----
+    val ScrimTop: Brush get() = HeColors.ScrimTop
+    val ScrimBottom: Brush get() = HeColors.ScrimBottom
+
+    val ButtonGlass: Color get() = HeColors.ButtonGlass
+    val ButtonGlassPressed: Color get() = HeColors.ButtonGlassPressed
 }
 
-val PlayerColorScheme = darkColorScheme(
-    primary = PlayerColors.Primary,
-    secondary = PlayerColors.Secondary,
-    tertiary = PlayerColors.Tertiary,
-    background = PlayerColors.Background,
-    surface = PlayerColors.Surface,
-    surfaceVariant = PlayerColors.SurfaceVariant,
-    primaryContainer = PlayerColors.PrimaryContainer,
-    onPrimary = Color(0xFF080B12),
-    onSecondary = Color(0xFF0E1715),
-    onTertiary = Color(0xFF15100A),
-    onBackground = PlayerColors.OnSurface,
-    onSurface = PlayerColors.OnSurface,
-    onSurfaceVariant = PlayerColors.OnSurfaceVariant,
-)
+/**
+ * Player 模块沿用全局 [HeColorScheme]。保留旧名让现有 import 继续生效。
+ */
+val PlayerColorScheme: ColorScheme = HeColorScheme
