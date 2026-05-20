@@ -189,6 +189,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
@@ -365,36 +366,32 @@ internal fun LibraryScreenV2(
         }
     }
     val galleryPrefs = remember { HePrefs(context) }
-    var imageGalleryStableTileDp by remember {
-        mutableFloatStateOf(
-            galleryPrefs.galleryTileDp.coerceIn(imageGalleryMinTileDp, imageGalleryMaxTileDp)
-        )
+    // 列数是 pinch 的主单位（用户偏好稳定值就是列数，不是瓦片像素）。pinch 期间
+    // 只动 pinchVisualScale，不动 spanCount；松手时一次性 swap 列数 + snap scale 回 1。
+    val initialImageGalleryColumns = remember {
+        galleryPrefs.galleryColumns.coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
     }
-    var imageGalleryTemporaryTileDp by remember { mutableFloatStateOf(imageGalleryStableTileDp) }
-    var imageGalleryPinchStartTileDp by remember { mutableFloatStateOf(imageGalleryStableTileDp) }
+    var imageGalleryStableColumns by remember { mutableIntStateOf(initialImageGalleryColumns) }
+    var imageGalleryPinchStartColumns by remember { mutableIntStateOf(initialImageGalleryColumns) }
+    var imageGalleryColumnsMigrated by remember {
+        mutableStateOf(galleryPrefs.hasGalleryColumns)
+    }
     var imageGalleryPinching by remember { mutableStateOf(false) }
+    // pinch 松手后 visual-scale animateTo→snap 阶段为 true，期间禁止 prefetch/warmup
+    // 这样新瓦片 decode 不会跟旧帧打架。settle 完成后回 false。
     var imageGallerySettling by remember { mutableStateOf(false) }
     var imageGalleryInteractionsEnabled by remember { mutableStateOf(true) }
     var imageGalleryAnchor by remember { mutableStateOf<GalleryPinchAnchor?>(null) }
     var imageGalleryAnchorJob by remember { mutableStateOf<Job?>(null) }
-    val renderedImageTileDp by animateFloatAsState(
-        targetValue = if (imageGalleryPinching) imageGalleryTemporaryTileDp else imageGalleryStableTileDp,
-        animationSpec = if (imageGalleryPinching) {
-            tween(durationMillis = 0)
-        } else {
-            tween(durationMillis = 160, easing = FastOutSlowInEasing)
-        },
-        label = "imageGalleryTileDp",
-        finishedListener = {
-            if (imageGallerySettling) {
-                imageGallerySettling = false
-                imageGalleryTemporaryTileDp = imageGalleryStableTileDp
-                imageGalleryAnchor = null
-                galleryPrefs.galleryTileDp = imageGalleryStableTileDp
-                imageGalleryInteractionsEnabled = true
-            }
-        }
-    )
+    // 当前实际渲染的瓦片 dp（由列数 + 容器宽度推算）。由 gallery 渲染块在 BoxWithConstraints
+    // 内 LaunchedEffect 更新；下游 prefetch/warmup/decode-size 逻辑读它来选合适的图大小。
+    var renderedImageTileDp by remember { mutableFloatStateOf(78f) }
+    // Visual-scale pinch 模型：pinch 期间只通过 graphicsLayer 把 RecyclerView 容器
+    // scaleX/Y，spanCount 不变；松手 animateTo(handoffScale)，handoff 时刻 (oldTile×scale)
+    // == newTile×1，所以同帧 swap 列数 + snap scale=1 视觉上无缝。
+    val pinchVisualScale = remember { Animatable(1f) }
+    var pinchFocalPx by remember { mutableStateOf(Offset(0f, 0f)) }
+    var pinchRecyclerSizePx by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     val swipeController = remember { SwipeRevealController() }
 
     fun imageGalleryTileForColumns(availableWidthDp: Float, gapDp: Float, columns: Int): Float {
@@ -409,22 +406,37 @@ internal fun LibraryScreenV2(
     }
 
     fun captureImageGalleryAnchor(focalPoint: Offset): GalleryPinchAnchor? {
-        val item = imageGridState.layoutInfo.visibleItemsInfo
-            .filter { (it.key as? String)?.startsWith("image-gallery-") == true }
-            .minByOrNull {
-                val centerX = it.offset.x + it.size.width / 2f
-                val centerY = it.offset.y + it.size.height / 2f
-                abs(centerX - focalPoint.x) + abs(centerY - focalPoint.y)
+        // 用真实的图廊 RecyclerView 而不是 LazyGridState（后者在当前架构下不挂在
+        // 图廊路径上，只是历史遗留 state）。挑离 focal 最近的可见瓦片作锚点。
+        val recyclerView = imageGalleryRecyclerView ?: return null
+        val nativeHeaderCount = 4  // Gallery adapter 默认 inlineHeaders=true 时 4 个 header
+        val closest = (0 until recyclerView.childCount)
+            .mapNotNull { idx ->
+                val child = recyclerView.getChildAt(idx) ?: return@mapNotNull null
+                val adapterPosition = recyclerView.getChildAdapterPosition(child)
+                // inlineHeaders=false 时实际 header 0 个，>= 0 的位置都是瓦片；
+                // inlineHeaders=true 时跳过前 nativeHeaderCount。这里用宽松条件 >= 0。
+                if (adapterPosition < 0) return@mapNotNull null
+                val centerX = child.left + child.width / 2f
+                val centerY = child.top + child.height / 2f
+                Triple(child, adapterPosition, abs(centerX - focalPoint.x) + abs(centerY - focalPoint.y))
             }
-        return item?.let { GalleryPinchAnchor(itemIndex = it.index, topOffsetPx = it.offset.y) }
+            .minByOrNull { it.third }
+            ?: return null
+        return GalleryPinchAnchor(
+            itemIndex = closest.second,
+            topOffsetPx = closest.first.top
+        )
     }
 
     fun scheduleImageGalleryAnchorCorrection() {
         val anchor = imageGalleryAnchor ?: return
+        val recyclerView = imageGalleryRecyclerView ?: return
         imageGalleryAnchorJob?.cancel()
         imageGalleryAnchorJob = scope.launch {
             withFrameNanos { }
-            imageGridState.scrollToItem(anchor.itemIndex, -anchor.topOffsetPx)
+            (recyclerView.layoutManager as? GridLayoutManager)
+                ?.scrollToPositionWithOffset(anchor.itemIndex, anchor.topOffsetPx)
         }
     }
 
@@ -649,16 +661,9 @@ internal fun LibraryScreenV2(
                 if (scrolling && !swipeController.isDragging && !imageGalleryPinching) swipeController.close()
             }
     }
-    LaunchedEffect(imageGridState) {
-        snapshotFlow { Triple(renderedImageTileDp, imageGalleryPinching, imageGallerySettling) }
-            .collectLatest { (_, pinching, settling) ->
-                if ((pinching || settling) && mediaType == "image") {
-                    imageGalleryAnchor?.let {
-                        imageGridState.scrollToItem(it.itemIndex, -it.topOffsetPx)
-                    }
-                }
-            }
-    }
+    // 旧的「pinch 期间每帧把 imageGridState 滚到锚点」LaunchedEffect 已删除——
+    // 新模型只在 pinch 结束 swap 列数那一刻通过 scheduleImageGalleryAnchorCorrection
+    // 单次复位，过程更平滑。LazyGridState 在本架构也不参与图廊渲染。
     LaunchedEffect(listState, imageGridState, mediaType) {
         snapshotFlow {
             if (mediaType == "image") imageGridState.isScrollInProgress else listState.isScrollInProgress
@@ -847,45 +852,204 @@ internal fun LibraryScreenV2(
                     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                         val galleryGapDp = 2f
                         val availableWidthDp = (maxWidth.value - 4f).coerceAtLeast(1f)
-                        val galleryColumns = floor(
-                            (availableWidthDp + galleryGapDp) / (renderedImageTileDp + galleryGapDp)
-                        ).toInt().coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
-                        val actualImageTileDp = (
-                            (availableWidthDp - galleryGapDp * (galleryColumns - 1)) / galleryColumns
-                        ).coerceAtLeast(1f)
+                        // 列数是稳定单位；pinch 期间不变（视觉缩放走 graphicsLayer），
+                        // 松手 swap 时一次性切到 targetColumns。
+                        val galleryColumns = imageGalleryStableColumns
+                            .coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+                        val actualImageTileDp = imageGalleryTileForColumns(
+                            availableWidthDp, galleryGapDp, galleryColumns
+                        )
+                        LaunchedEffect(actualImageTileDp) {
+                            renderedImageTileDp = actualImageTileDp
+                        }
                         LaunchedEffect(galleryColumns) {
                             imageGalleryCurrentColumns = galleryColumns
                         }
-                        NativeImageGalleryRecyclerV2(
-                            items = visibleItems,
-                            serverUrl = serverUrl,
-                            token = token,
-                            loading = loading,
-                            error = error,
-                            search = search,
-                            mediaFilters = mediaFilters,
-                            statusFilters = statusFilters,
-                            selectedMediaType = mediaType,
-                            selectedStatus = statusFilter,
-                            viewMode = viewMode,
-                            columns = galleryColumns,
-                            tileDp = actualImageTileDp,
-                            interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
-                            playlist = visibleItems,
-                            onSearchChange = { search = it },
-                            onMediaSelected = { mediaType = it },
-                            onStatusSelected = { statusFilter = it },
-                            onOpenFilters = { filterSheetOpen = true },
-                            onViewModeSelected = { viewMode = it },
-                            onMenu = { scope.launch { drawerState.open() } },
-                            onRefresh = { load(search) },
-                            onRetry = { load(search) },
-                            onRecycler = { imageGalleryRecyclerView = it },
-                            onBackTopVisible = { visible -> imageGalleryBackTopVisible = visible },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clipToBounds()
-                        )
+                        // 旧用户迁移：第一次进图廊时如果还没存过 columns 偏好，
+                        // 从老的 tileDp + 当前可用宽度反推一个等价列数。
+                        LaunchedEffect(availableWidthDp, imageGalleryColumnsMigrated) {
+                            if (!imageGalleryColumnsMigrated && availableWidthDp > 1f) {
+                                val migrated = imageGalleryColumnsForTile(
+                                    galleryPrefs.galleryTileDp
+                                        .coerceIn(imageGalleryMinTileDp, imageGalleryMaxTileDp),
+                                    availableWidthDp,
+                                    galleryGapDp,
+                                    imageGalleryStableColumns,
+                                    withHysteresis = false
+                                ).coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+                                imageGalleryStableColumns = migrated
+                                galleryPrefs.galleryColumns = migrated
+                                imageGalleryColumnsMigrated = true
+                            }
+                        }
+
+                        // ----------------- pinch 回调 -----------------
+                        val onPinchStart: (Offset) -> Unit = { focal ->
+                            imageGalleryAnchor = captureImageGalleryAnchor(focal)
+                            imageGalleryPinchStartColumns = imageGalleryStableColumns
+                            imageGalleryPinching = true
+                            imageGallerySettling = false
+                            imageGalleryInteractionsEnabled = false
+                            imageGalleryNetworkAllowed.set(false)
+                            cancelVisibleCoverWarmup()
+                            cancelCoverPrefetches()
+                            pinchFocalPx = focal
+                            scope.launch { pinchVisualScale.snapTo(1f) }
+                        }
+                        val onPinch: (Float, Offset) -> Unit = { scale, focal ->
+                            pinchFocalPx = focal
+                            // 阻尼：原始 pinch 缩放×0.72，避免微小手指移动跨列数阈值
+                            val damped = 1f + (scale - 1f) * 0.72f
+                            // 橡皮筋：推算目标列数越界时，多余力量减半
+                            val implied = imageGalleryPinchStartColumns / damped
+                            val clampedImplied = implied.coerceIn(
+                                imageGalleryMinColumns.toFloat(),
+                                imageGalleryMaxColumns.toFloat()
+                            )
+                            val rubberDamped = if (implied != clampedImplied) {
+                                damped + (imageGalleryPinchStartColumns / clampedImplied - damped) * 0.5f
+                            } else damped
+                            scope.launch {
+                                pinchVisualScale.snapTo(rubberDamped.coerceIn(0.35f, 3f))
+                            }
+                        }
+                        val onPinchEnd: () -> Unit = {
+                            val finalScale = pinchVisualScale.value
+                            val targetColumns = (imageGalleryPinchStartColumns / finalScale)
+                                .roundToInt()
+                                .coerceIn(imageGalleryMinColumns, imageGalleryMaxColumns)
+                            val startTile = imageGalleryTileForColumns(
+                                availableWidthDp, galleryGapDp, imageGalleryPinchStartColumns
+                            )
+                            val targetTile = imageGalleryTileForColumns(
+                                availableWidthDp, galleryGapDp, targetColumns
+                            )
+                            // handoffScale：使旧网格在 swap 瞬间的视觉大小等同新网格 scale=1 的大小
+                            val handoffScale = targetTile / startTile
+                            imageGallerySettling = true
+                            imageGalleryNetworkAllowed.set(true)
+                            scope.launch {
+                                // Phase 1：平滑滑到 handoff
+                                pinchVisualScale.animateTo(
+                                    targetValue = handoffScale,
+                                    animationSpec = tween(
+                                        durationMillis = 140,
+                                        easing = FastOutSlowInEasing
+                                    )
+                                )
+                                // Phase 2：同帧 swap 列数 + scale snap 回 1
+                                if (targetColumns != imageGalleryStableColumns) {
+                                    imageGalleryStableColumns = targetColumns
+                                    galleryPrefs.galleryColumns = targetColumns
+                                }
+                                pinchVisualScale.snapTo(1f)
+                                imageGalleryPinching = false
+                                imageGallerySettling = false
+                                imageGalleryInteractionsEnabled = true
+                                scheduleImageGalleryAnchorCorrection()
+                                imageGalleryAnchor = null
+                                scheduleVisibleCoverWarmup(deferMs = 80L)
+                                scheduleCoverPrefetch(deferMs = 360L)
+                            }
+                        }
+
+                        // ----------------- 渲染 -----------------
+                        // 4 个 header 提到 Column 顶部（不参与 pinch 缩放）。瓦片网格放
+                        // graphicsLayer Box，scale 跟 pinchVisualScale，origin 跟手指焦点。
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                                LibraryHeaderV2(
+                                    loading = loading,
+                                    viewMode = viewMode,
+                                    galleryMode = true,
+                                    onViewModeSelected = { viewMode = it },
+                                    onMenu = { scope.launch { drawerState.open() } },
+                                    onRefresh = { load(search) }
+                                )
+                            }
+                            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                SearchAndFilterPanelV2(
+                                    search = search,
+                                    onSearchChange = { search = it },
+                                    filters = mediaFilters,
+                                    selectedValue = mediaType,
+                                    onSelected = { mediaType = it },
+                                    statusFilters = statusFilters,
+                                    selectedStatusValue = statusFilter,
+                                    onStatusSelected = { statusFilter = it },
+                                    onOpenFilters = { filterSheetOpen = true }
+                                )
+                            }
+                            if (error != null) {
+                                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                                    ErrorPanelV2(
+                                        error = error ?: "",
+                                        loading = loading,
+                                        onRetry = { load(search) }
+                                    )
+                                }
+                            }
+                            if (loading) {
+                                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
+                                    LoadingLineV2()
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .onSizeChanged { pinchRecyclerSizePx = it }
+                                    .graphicsLayer {
+                                        scaleX = pinchVisualScale.value
+                                        scaleY = pinchVisualScale.value
+                                        val w = pinchRecyclerSizePx.width.toFloat()
+                                            .coerceAtLeast(1f)
+                                        val h = pinchRecyclerSizePx.height.toFloat()
+                                            .coerceAtLeast(1f)
+                                        transformOrigin = TransformOrigin(
+                                            (pinchFocalPx.x / w).coerceIn(0f, 1f),
+                                            (pinchFocalPx.y / h).coerceIn(0f, 1f)
+                                        )
+                                    }
+                                    .clipToBounds()
+                            ) {
+                                NativeImageGalleryRecyclerV2(
+                                    items = visibleItems,
+                                    serverUrl = serverUrl,
+                                    token = token,
+                                    loading = loading,
+                                    error = error,
+                                    search = search,
+                                    mediaFilters = mediaFilters,
+                                    statusFilters = statusFilters,
+                                    selectedMediaType = mediaType,
+                                    selectedStatus = statusFilter,
+                                    viewMode = viewMode,
+                                    columns = galleryColumns,
+                                    tileDp = actualImageTileDp,
+                                    interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
+                                    playlist = visibleItems,
+                                    onSearchChange = { search = it },
+                                    onMediaSelected = { mediaType = it },
+                                    onStatusSelected = { statusFilter = it },
+                                    onOpenFilters = { filterSheetOpen = true },
+                                    onViewModeSelected = { viewMode = it },
+                                    onMenu = { scope.launch { drawerState.open() } },
+                                    onRefresh = { load(search) },
+                                    onRetry = { load(search) },
+                                    onRecycler = { imageGalleryRecyclerView = it },
+                                    onBackTopVisible = { visible ->
+                                        imageGalleryBackTopVisible = visible
+                                    },
+                                    inlineHeaders = false,
+                                    pinchZoomEnabled = true,
+                                    onPinchStart = onPinchStart,
+                                    onPinch = onPinch,
+                                    onPinchEnd = onPinchEnd,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     }
                 } else {
                 LazyColumn(

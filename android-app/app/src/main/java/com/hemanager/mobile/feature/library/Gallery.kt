@@ -305,6 +305,16 @@ internal fun NativeImageGalleryRecyclerV2(
     onRetry: () -> Unit,
     onRecycler: (RecyclerView) -> Unit,
     onBackTopVisible: (Boolean) -> Unit,
+    // inlineHeaders=false: 适配器跳过 4 个 header 行，让调用方在 Column 外部
+    // 自己渲染。配合 graphicsLayer scale，pinch 视觉缩放只作用在瓦片上而不放大顶栏。
+    inlineHeaders: Boolean = true,
+    // 原生 pinch：调用 MainActivity.setImageGalleryPinchTouchListener 注册/反注册。
+    // false 时不注册（保持旧 Compose 修饰符路径或纯无 pinch）；true 时 RecyclerView
+    // 双指事件直接触发 callbacks，不经 Compose 事件管线，响应更快。
+    pinchZoomEnabled: Boolean = false,
+    onPinchStart: (Offset) -> Unit = {},
+    onPinch: (Float, Offset) -> Unit = { _, _ -> },
+    onPinchEnd: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val coverImageLoader = com.hemanager.mobile.ui.components.LocalCoverImageLoader.current
@@ -312,6 +322,7 @@ internal fun NativeImageGalleryRecyclerV2(
     val tilePx = remember(tileDp, density) {
         with(density) { tileDp.dp.toPx().roundToInt() }
     }
+    val mainActivity = (LocalContext.current as? com.hemanager.mobile.MainActivity)
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -324,6 +335,15 @@ internal fun NativeImageGalleryRecyclerV2(
                 itemAnimator = null
                 setHasFixedSize(true)
                 setItemViewCacheSize(columns * 4)
+                // 注册原生 pinch 监听（如果启用且能拿到 MainActivity 引用）。
+                // MainActivity 内部维护 WeakHashMap<RecyclerView, Listener>，重复注册会先反注册旧的。
+                mainActivity?.setImageGalleryPinchTouchListener(
+                    recyclerView = this,
+                    enabled = pinchZoomEnabled,
+                    onPinchStart = onPinchStart,
+                    onPinch = onPinch,
+                    onPinchEnd = onPinchEnd
+                )
                 val galleryAdapter = NativeImageGalleryAdapterV2(
                     context = context,
                     coverImageLoader = coverImageLoader,
@@ -348,7 +368,8 @@ internal fun NativeImageGalleryRecyclerV2(
                     onViewModeSelected = onViewModeSelected,
                     onMenu = onMenu,
                     onRefresh = onRefresh,
-                    onRetry = onRetry
+                    onRetry = onRetry,
+                    inlineHeaders = inlineHeaders
                 )
                 adapter = galleryAdapter
                 layoutManager = GridLayoutManager(context, columns).apply {
@@ -389,6 +410,16 @@ internal fun NativeImageGalleryRecyclerV2(
                 lm?.spanCount = columns
                 recyclerView.setItemViewCacheSize(columns * 4)
             }
+            // Re-register pinch listener so 当 enabled 切换（如离开图片库进入视频库）
+            // 或回调更新（state 闭包刷新）时，监听器永远指向最新闭包。MainActivity 内
+            // 部对同一个 RecyclerView 会先反注册旧的再加新的，重复调用安全。
+            mainActivity?.setImageGalleryPinchTouchListener(
+                recyclerView = recyclerView,
+                enabled = pinchZoomEnabled,
+                onPinchStart = onPinchStart,
+                onPinch = onPinch,
+                onPinchEnd = onPinchEnd
+            )
             val galleryAdapter = recyclerView.adapter as NativeImageGalleryAdapterV2
             galleryAdapter.updateConfig(
                 serverUrl = serverUrl,
@@ -444,7 +475,11 @@ private class NativeImageGalleryAdapterV2(
     private var onViewModeSelected: (LibraryViewMode) -> Unit,
     private var onMenu: () -> Unit,
     private var onRefresh: () -> Unit,
-    private var onRetry: () -> Unit
+    private var onRetry: () -> Unit,
+    // inlineHeaders=false: 跳过 4 个固定 header 行（top bar / 搜索过滤 / error / loading）。
+    // 用于 pinch-zoom 时只想缩放瓦片但保持顶部 UI 不变的场景——调用方在 RecyclerView 外
+    // 的 Column 里渲染 header。这样 graphicsLayer 的 scale 不会放大搜索栏字体。
+    private val inlineHeaders: Boolean = true
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     private val viewTypeHeader = 1
     private val viewTypeSearch = 2
@@ -452,7 +487,7 @@ private class NativeImageGalleryAdapterV2(
     private val viewTypeLoading = 4
     private val viewTypeEmpty = 5
     private val viewTypeTile = 6
-    private val fixedHeaderCount = 4
+    private val fixedHeaderCount = if (inlineHeaders) 4 else 0
     private var items: List<MediaItem> = emptyList()
     private var itemIds: IntArray = IntArray(0)
     var networkAllowed: Boolean = true
@@ -525,10 +560,10 @@ private class NativeImageGalleryAdapterV2(
 
     override fun getItemViewType(position: Int): Int {
         return when {
-            position == 0 -> viewTypeHeader
-            position == 1 -> viewTypeSearch
-            position == 2 -> viewTypeError
-            position == 3 -> viewTypeLoading
+            inlineHeaders && position == 0 -> viewTypeHeader
+            inlineHeaders && position == 1 -> viewTypeSearch
+            inlineHeaders && position == 2 -> viewTypeError
+            inlineHeaders && position == 3 -> viewTypeLoading
             hasEmptyRow() && position == fixedHeaderCount -> viewTypeEmpty
             else -> viewTypeTile
         }

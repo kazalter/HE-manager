@@ -223,11 +223,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
+import java.util.WeakHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private val coverImageLoader: ImageLoader by lazy {
@@ -267,6 +269,11 @@ class MainActivity : ComponentActivity() {
     /** 图廊原生 RecyclerView 上 pinch 缩放正在进行中。Gallery 模块 OnItemTouchListener 设；
      *  dispatchTouchEvent 读到为 true 时主动放弃边缘手势探测，避免双指误判。 */
     internal var imageGalleryNativePinching: Boolean = false
+
+    /** 图廊每个 RecyclerView 注册的 pinch OnItemTouchListener，WeakHashMap 防止
+     *  RecyclerView 被销毁后我们还持有强引用造成内存泄漏。 */
+    private val imageGalleryPinchTouchListeners =
+        WeakHashMap<RecyclerView, RecyclerView.OnItemTouchListener>()
 
     // -- 边缘手势触摸跟踪（仅 dispatchTouchEvent 内部使用，保持 private）
     private var edgeDrawerTracking: Boolean = false
@@ -402,6 +409,116 @@ class MainActivity : ComponentActivity() {
                 decor.systemGestureExclusionRects = listOf(android.graphics.Rect(0, 0, edge, height))
             }
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // 图廊 pinch 缩放：原生 RecyclerView OnItemTouchListener
+    // ------------------------------------------------------------------------
+    // 比 Compose 的 awaitEachGesture 修饰符更响应——不走 Compose 的事件管线，
+    // 直接在 RecyclerView 层拦截，配合 requestDisallowInterceptTouchEvent 阻止
+    // 父级（包括我们自己的 dispatchTouchEvent 边缘手势）抢走双指。
+    //
+    // 该方法被 Gallery 模块通过 (context as MainActivity).setImageGalleryPinchTouchListener(...)
+    // 调用。enabled=false 时移除已注册的监听并复位 imageGalleryNativePinching 标志。
+    //
+    // 回调语义：
+    //   onPinchStart(focal): 第二指落下，传入两指中点（RecyclerView 局部坐标）
+    //   onPinch(scale, focal): 持续两指移动；scale = currentDistance / startDistance，已 clamp 到 [0.45, 2.40]
+    //   onPinchEnd(): 任一指抬起或取消
+    internal fun setImageGalleryPinchTouchListener(
+        recyclerView: RecyclerView,
+        enabled: Boolean,
+        onPinchStart: (Offset) -> Unit,
+        onPinch: (Float, Offset) -> Unit,
+        onPinchEnd: () -> Unit
+    ) {
+        imageGalleryPinchTouchListeners.remove(recyclerView)?.let {
+            recyclerView.removeOnItemTouchListener(it)
+        }
+        if (!enabled) {
+            imageGalleryNativePinching = false
+            return
+        }
+
+        var pinching = false
+        var startDistance = 0f
+
+        fun distance(event: MotionEvent): Float {
+            if (event.pointerCount < 2) return 0f
+            val dx = event.getX(0) - event.getX(1)
+            val dy = event.getY(0) - event.getY(1)
+            return sqrt(dx * dx + dy * dy)
+        }
+
+        fun focalPoint(event: MotionEvent): Offset {
+            if (event.pointerCount < 2) return Offset.Zero
+            return Offset(
+                (event.getX(0) + event.getX(1)) / 2f,
+                (event.getY(0) + event.getY(1)) / 2f
+            )
+        }
+
+        fun endPinch() {
+            if (!pinching) return
+            pinching = false
+            imageGalleryNativePinching = false
+            recyclerView.parent?.requestDisallowInterceptTouchEvent(false)
+            onPinchEnd()
+        }
+
+        val listener = object : RecyclerView.OnItemTouchListener {
+            override fun onInterceptTouchEvent(rv: RecyclerView, event: MotionEvent): Boolean {
+                if (
+                    event.actionMasked == MotionEvent.ACTION_UP ||
+                    event.actionMasked == MotionEvent.ACTION_CANCEL ||
+                    event.actionMasked == MotionEvent.ACTION_POINTER_UP
+                ) {
+                    val wasPinching = pinching
+                    endPinch()
+                    return wasPinching
+                }
+                if (event.pointerCount >= 2) {
+                    val currentDistance = distance(event)
+                    if (currentDistance > 1f && !pinching) {
+                        pinching = true
+                        imageGalleryNativePinching = true
+                        startDistance = currentDistance
+                        recyclerView.parent?.requestDisallowInterceptTouchEvent(true)
+                        onPinchStart(focalPoint(event))
+                    }
+                    return true
+                }
+                return pinching
+            }
+
+            override fun onTouchEvent(rv: RecyclerView, event: MotionEvent) {
+                if (
+                    event.actionMasked == MotionEvent.ACTION_UP ||
+                    event.actionMasked == MotionEvent.ACTION_CANCEL ||
+                    event.actionMasked == MotionEvent.ACTION_POINTER_UP
+                ) {
+                    endPinch()
+                } else if (event.pointerCount >= 2) {
+                    val currentDistance = distance(event)
+                    if (currentDistance <= 1f) return
+                    if (!pinching) {
+                        pinching = true
+                        imageGalleryNativePinching = true
+                        startDistance = currentDistance
+                        recyclerView.parent?.requestDisallowInterceptTouchEvent(true)
+                        onPinchStart(focalPoint(event))
+                    } else {
+                        val scale = (currentDistance / startDistance).coerceIn(0.45f, 2.40f)
+                        onPinch(scale, focalPoint(event))
+                    }
+                }
+            }
+
+            override fun onRequestDisallowInterceptTouchEvent(disallowIntercept: Boolean) = Unit
+        }
+
+        imageGalleryPinchTouchListeners[recyclerView] = listener
+        recyclerView.addOnItemTouchListener(listener)
     }
 
     @Composable
