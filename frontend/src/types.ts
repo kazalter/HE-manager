@@ -244,3 +244,77 @@ export interface XPost {
     completed_at: string | null;
     discovered_at: string;
 }
+
+// -- Creators (unified X authors + manga artists) ----------------------------
+// Backend: /creators, /creators/{screen_name}, /mobile/creators*
+// Source : backend/app/creators.py
+
+export interface Creator {
+    kind: 'x' | 'artist';
+    key: string;                  // 'x:<screen_name>' or 'a:<artist>'
+    screen_name?: string | null;  // X authors only; manga artists have none
+    display_name?: string | null;
+    media_count: number;
+    posts_known: number;          // 0 for manga artists
+    posts_pending: number;        // 0 for manga artists
+    cover_path?: string | null;
+}
+
+export interface CreatorDetail {
+    creator: Creator;
+    media: Media[];
+}
+
+// -- Dashboard stats --------------------------------------------------------
+// Backend: /stats/{overview,distribution,activity,attention}
+// Source : backend/app/stats.py
+
+export interface StatsOverview {
+    total: number;
+    by_type: Record<string, number>;        // {'video': N, 'manga': N, 'image': N, ...}
+    view_status: Record<string, number>;    // {'unviewed': N, 'viewing': N, 'viewed': N}
+    favorites: number;
+    rated: number;
+    missing: number;
+    total_size_bytes: number;
+    total_duration_seconds: number;
+    average_rating: number;
+}
+
+export interface StatsDistributionGrowthPoint {
+    month: string;        // 'YYYY-MM'
+    cumulative: number;
+}
+
+export interface StatsDistribution {
+    rating_histogram: Record<string, number>;  // {'5': N, '4': N, ...}
+    by_source: Record<string, number>;         // {'wnacg': N, 'x': N, 'local': N, ...}
+    growth: StatsDistributionGrowthPoint[];
+}
+
+export interface StatsActivityBucket {
+    date: string;   // 'YYYY-MM-DD'
+    count: number;
+}
+
+export interface StatsActivity {
+    days: number;
+    to_date: string;                    // 'YYYY-MM-DD' (right edge of window)
+    buckets: StatsActivityBucket[];
+    total: number;
+    max: number;
+}
+
+export interface StatAttentionItem {
+    id: number;
+    title: string;
+    cover_path?: string | null;
+    rating: number;
+    last_opened_at: string | null;
+}
+
+export interface StatsAttention {
+    dusty: StatAttentionItem[];
+    unrated: StatAttentionItem[];
+    stale_days: number;
+}
