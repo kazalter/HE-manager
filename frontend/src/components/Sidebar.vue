@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Home, Image as ImageIcon, LogOut, Settings as SettingsIcon, Star, Users, RefreshCw } from 'lucide-vue-next'
+import { BarChart3, Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Home, Image as ImageIcon, LogOut, Palette, Settings as SettingsIcon, Star, Users, RefreshCw } from 'lucide-vue-next'
 import type { User } from '../types'
 
 const props = defineProps<{
@@ -94,6 +94,16 @@ const toggle = () => {
       <router-link to="/external" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="外部收藏">
         <Globe2 :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">外部收藏</span>
+      </router-link>
+
+      <router-link to="/creators" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="创作者">
+        <Palette :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
+        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">创作者</span>
+      </router-link>
+
+      <router-link to="/stats" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="统计">
+        <BarChart3 :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
+        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">统计</span>
       </router-link>
 
       <router-link to="/dedup" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="重复管理">

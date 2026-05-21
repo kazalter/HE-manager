@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { AtSign, ChevronDown, Globe2, Plus } from 'lucide-vue-next'
+import { AtSign, ChevronDown, Globe2, Headphones, Plus } from 'lucide-vue-next'
 import WnacgPanel from '../components/external/WnacgPanel.vue'
 import XImportPanel from '../components/external/XImportPanel.vue'
+import AsmrPanel from '../components/external/AsmrPanel.vue'
 
-type SiteKey = 'wnacg' | 'x'
+type SiteKey = 'wnacg' | 'x' | 'asmr'
 
 interface SiteOption {
   key: SiteKey
@@ -17,6 +18,7 @@ interface SiteOption {
 const sites: SiteOption[] = [
   { key: 'wnacg', label: 'WNACG', description: '漫画收藏夹同步与下载', icon: Globe2, badge: 'Cookie 同步' },
   { key: 'x', label: 'X (Twitter)', description: '喜欢媒体一键导入', icon: AtSign, badge: '归档导入' },
+  { key: 'asmr', label: 'ASMR.one', description: 'ASMR 标记作品同步与下载', icon: Headphones, badge: 'Token 同步' },
 ]
 
 const activeSite = ref<SiteKey>('wnacg')
@@ -127,6 +129,7 @@ const selectSite = (key: SiteKey) => {
       <KeepAlive>
         <WnacgPanel v-if="activeSite === 'wnacg'" key="wnacg" />
         <XImportPanel v-else-if="activeSite === 'x'" key="x" />
+        <AsmrPanel v-else-if="activeSite === 'asmr'" key="asmr" />
       </KeepAlive>
     </main>
   </div>
