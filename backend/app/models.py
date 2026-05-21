@@ -51,6 +51,11 @@ class Media(Base):
     missing_since = Column(DateTime, nullable=True)
     cover_time_ms = Column(Integer, nullable=True)
     cover_source = Column(String, nullable=True) # e.g., 'first_valid_frame', 'fallback_10_percent', 'manual'
+    # Doujin-style author parsed from manga title via manga_artist.parse_artist.
+    # Used by creators.py to surface manga artists alongside X authors in
+    # /creators. Nullable because non-manga media + titles without a leading
+    # bracket have no artist; indexed for the creators GROUP-BY scan.
+    artist = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Local-file dedup fields. `duplicate_status` is one of:
     # 'unique'              — confirmed unique

@@ -18,7 +18,17 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
-from . import auth, database, external_sources, models, schemas, scanner
+from . import (
+    asmr_source,
+    auth,
+    creators as creators_mod,
+    database,
+    external_sources,
+    models,
+    schemas,
+    scanner,
+    stats as stats_mod,
+)
 from .database import engine, get_db
 from .dedup import merge as dedup_merge
 from .dedup import worker as dedup_worker
@@ -112,6 +122,11 @@ def ensure_media_option_columns():
         "source_site": "VARCHAR",
         "is_missing": "BOOLEAN NOT NULL DEFAULT 0",
         "missing_since": "DATETIME",
+        # Manga artist parsed from doujin-style title (see manga_artist.py +
+        # creators._artist_creators). Backfill is opportunistic — happens
+        # next time the row is rescanned or imported; old rows stay NULL
+        # until then, which creators.py treats as "no artist".
+        "artist": "VARCHAR",
     }
 
     with engine.begin() as conn:
@@ -2071,3 +2086,122 @@ def delete_media_file(
     db.delete(media)
     db.commit()
     return {"file_deleted": file_deleted, "media_id": media_id}
+
+
+# ============================================================================
+# Dashboard statistics — backed by app/stats.py (pure read-only aggregations)
+# ============================================================================
+# Frontend: StatsView.vue fetches all four on mount + on refresh click. Each
+# function below is a thin wrapper around stats.<name>(db); no Pydantic model
+# because the response is already a dict that FastAPI auto-JSON-encodes, and
+# the shape evolves with the dashboard (formalising it would create churn).
+
+@app.get("/stats/overview")
+def stats_overview(db: Session = Depends(get_db)):
+    return stats_mod.overview(db)
+
+
+@app.get("/stats/distribution")
+def stats_distribution(db: Session = Depends(get_db)):
+    return stats_mod.distribution(db)
+
+
+@app.get("/stats/activity")
+def stats_activity(days: int = 365, db: Session = Depends(get_db)):
+    # Default 365 matches StatsView's heatmap which renders a year's worth of
+    # buckets. Cap upper bound so a stray ?days=99999 can't lock the table.
+    days = max(1, min(days, 730))
+    return stats_mod.activity(db, days=days)
+
+
+@app.get("/stats/attention")
+def stats_attention(db: Session = Depends(get_db)):
+    return stats_mod.attention(db)
+
+
+# ============================================================================
+# Creators — unified X authors + manga artists, backed by app/creators.py
+# ============================================================================
+# Frontend: CreatorsView.vue lists via /creators and opens detail via
+# /creators/{screen_name}. The vue-only detail path assumes X authors
+# (manga artists have no `screen_name`, so they aren't clickable in the UI).
+# Android (Wave 5 of the structural refactor) uses /mobile/creators and
+# /mobile/creators/detail?key=... which support both kinds via the unified
+# `key` ("x:<sn>" or "a:<artist>").
+
+@app.get("/creators")
+def list_creators(
+    search: Optional[str] = None,
+    sort: str = "count",
+    media_type: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return creators_mod.list_creators(db, search=search, sort=sort, media_type=media_type)
+
+
+@app.get("/creators/{screen_name}")
+def creator_detail_by_sn(screen_name: str, db: Session = Depends(get_db)):
+    # The vue UI only routes here for X authors (its <router-link> uses
+    # creator.screen_name). Manga-artist detail goes through /mobile/creators/detail.
+    detail = creators_mod.creator_detail(db, f"x:{screen_name}")
+    if detail is None:
+        raise HTTPException(status_code=404, detail="creator not found")
+    return detail
+
+
+@app.get("/mobile/creators")
+def mobile_list_creators(
+    kind: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: str = "count",
+    db: Session = Depends(get_db),
+):
+    # Android client sends `kind` ('all'/'manga'/'image'/'video'/'audio'); the
+    # module's list_creators takes `media_type`. 'all' or empty → no filter;
+    # 'manga' → manga artists only (X authors will return zero); 'image'/'video'
+    # → X authors filtered by that media_type. ('audio' currently has no creator
+    # source, so returns empty — kept in the enum for forward compatibility.)
+    media_type = None if not kind or kind == "all" else kind
+    return creators_mod.list_creators(db, search=search, sort=sort, media_type=media_type)
+
+
+@app.get("/mobile/creators/detail")
+def mobile_creator_detail(key: str, db: Session = Depends(get_db)):
+    # Android sends the full unified key ("x:<sn>" or "a:<artist>") so this is
+    # a direct passthrough — no x:-prefix assumption like the vue endpoint above.
+    detail = creators_mod.creator_detail(db, key)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="creator not found")
+    return detail
+
+
+# ============================================================================
+# ASMR.one — mirror reachability probe (P1 scope from app/asmr_source.py)
+# ============================================================================
+# Frontend: AsmrPanel.vue "探活" button. Builds candidate list (preferred base
+# first, then user-supplied mirrors, then known pool) and pings /api/ on each.
+# Pure network calls, no DB writes — safe to leave un-auth'd at this stage
+# but kept consistent with other /external/* endpoints (auth via interceptor).
+#
+# /external/asmr/sync and /external/asmr/downloads are intentionally NOT
+# implemented in this commit: they need source-row persistence, background
+# job orchestration, and credential storage — that's a separate design pass.
+
+@app.post("/external/asmr/mirrors/ping")
+def asmr_ping_mirrors(payload: dict = None):
+    payload = payload or {}
+    api_base = (payload.get("api_base") or "").strip()
+    raw_mirrors = payload.get("api_mirrors") or ""
+    bases = asmr_source.candidate_bases(
+        preferred=api_base if api_base else None,
+        mirrors=asmr_source.parse_mirrors(raw_mirrors) if raw_mirrors else None,
+    )
+    # Dedupe while keeping the preferred-first order (candidate_bases already
+    # does this, but be defensive against future changes).
+    seen = set()
+    ordered = []
+    for b in bases:
+        if b not in seen:
+            seen.add(b)
+            ordered.append(b)
+    return {"results": [asmr_source.ping_mirror(b) for b in ordered]}
