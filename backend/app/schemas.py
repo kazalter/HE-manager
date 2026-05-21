@@ -162,6 +162,22 @@ class ExternalFavoriteSyncResponse(BaseModel):
     items: List[ExternalFavoriteItem]
 
 
+class AsmrSyncRequest(BaseModel):
+    # ASMR shares ExternalFavoriteSource with wnacg via source_type='asmr'; this
+    # request is its dedicated payload (different fields than wnacg's cookie/url).
+    source_id: Optional[int] = None
+    name: str = "ASMR"
+    api_base: str = Field(min_length=1)
+    api_mirrors: Optional[str] = None       # newline/comma-separated alternates
+    audio_format_filter: str = "all"        # all | no_wav | mp3_only
+    audio_version_filter: str = "all"       # all | no_se | se_only
+    playlist_url: Optional[str] = None      # if set, pull from playlist instead of "marked"
+    username: Optional[str] = None          # only required first time; afterwards the stored bearer token is reused
+    password: Optional[str] = None          # transient — never persisted, only exchanged for a token
+    page_limit: int = Field(default=3, ge=1, le=30)
+    download_root_path: Optional[str] = None
+
+
 class ExternalFavoriteSourceUpdate(BaseModel):
     name: Optional[str] = None
     favorites_url: Optional[str] = None

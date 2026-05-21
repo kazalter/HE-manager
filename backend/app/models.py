@@ -124,6 +124,17 @@ class ExternalFavoriteSource(Base):
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # ASMR-only fields (NULL for wnacg sources). Adding columns here instead of
+    # a separate table keeps `/external/sources` polymorphic — the frontend
+    # already filters by source_type. Reuse: favorites_url=api_base for asmr,
+    # cookie=bearer_token (after login; not the raw password — we don't store
+    # passwords, just the token we got back). api_mirrors is a newline-separated
+    # list per the existing parse_mirrors helper.
+    api_mirrors = Column(Text, nullable=True)
+    audio_format_filter = Column(String, nullable=True)   # 'all' | 'no_wav' | 'mp3_only'
+    audio_version_filter = Column(String, nullable=True)  # 'all' | 'no_se' | 'se_only'
+    username = Column(String, nullable=True)              # asmr.one account name (for re-login if token expires)
+    playlist_url = Column(String, nullable=True)          # opt-in: pull from a playlist instead of "marked"
 
     items = relationship("ExternalFavoriteItem", back_populates="source", cascade="all, delete-orphan")
 

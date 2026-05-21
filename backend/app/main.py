@@ -145,9 +145,22 @@ def ensure_external_source_columns():
         return
     columns = {column["name"] for column in inspector.get_columns("external_favorite_sources")}
 
+    # ASMR-only columns; NULL for legacy wnacg sources. See models.py for the
+    # rationale (polymorphic single table over a sibling table).
+    asmr_columns = {
+        "api_mirrors": "TEXT",
+        "audio_format_filter": "VARCHAR",
+        "audio_version_filter": "VARCHAR",
+        "username": "VARCHAR",
+        "playlist_url": "VARCHAR",
+    }
+
     with engine.begin() as conn:
         if "download_root_path" not in columns:
             conn.execute(text("ALTER TABLE external_favorite_sources ADD COLUMN download_root_path VARCHAR"))
+        for name, definition in asmr_columns.items():
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE external_favorite_sources ADD COLUMN {name} {definition}"))
 
 
 ensure_external_source_columns()
@@ -2205,3 +2218,180 @@ def asmr_ping_mirrors(payload: dict = None):
             seen.add(b)
             ordered.append(b)
     return {"results": [asmr_source.ping_mirror(b) for b in ordered]}
+
+
+@app.post("/external/asmr/sync", response_model=schemas.ExternalFavoriteSyncResponse)
+def sync_asmr_favorites(payload: schemas.AsmrSyncRequest, db: Session = Depends(get_db)):
+    # Mirrors WNACG's /external/wnacg/sync but with asmr.one specifics. The
+    # source row is reused (source_type='asmr'); favorites_url=api_base and
+    # cookie=bearer_token. We don't store the raw password — only exchange it
+    # once for a token via asmr_source.login() and persist that.
+    if payload.source_id:
+        source = get_source_or_404(payload.source_id, db)
+    else:
+        # Match an existing asmr source on (source_type, api_base) to avoid
+        # creating dupes when the user re-syncs with the same base.
+        source = (
+            db.query(models.ExternalFavoriteSource)
+            .filter(
+                models.ExternalFavoriteSource.source_type == "asmr",
+                models.ExternalFavoriteSource.favorites_url == payload.api_base,
+            )
+            .first()
+        )
+        if not source:
+            source = models.ExternalFavoriteSource(
+                source_type="asmr",
+                name=payload.name or "ASMR",
+                favorites_url=payload.api_base,
+            )
+            db.add(source)
+            db.flush()
+
+    # Apply incoming config (everything except creds, which are handled below)
+    source.name = payload.name or source.name
+    source.favorites_url = payload.api_base or source.favorites_url
+    source.api_mirrors = payload.api_mirrors if payload.api_mirrors is not None else source.api_mirrors
+    source.audio_format_filter = payload.audio_format_filter or source.audio_format_filter or "all"
+    source.audio_version_filter = payload.audio_version_filter or source.audio_version_filter or "all"
+    source.playlist_url = payload.playlist_url if payload.playlist_url is not None else source.playlist_url
+    if payload.download_root_path is not None:
+        source.download_root_path = payload.download_root_path.strip() or None
+    if payload.username:
+        source.username = payload.username
+
+    # Resolve token: if creds came in this request, login fresh (overwriting any
+    # stale token). Otherwise reuse what's already stored.
+    api_base = asmr_source.normalize_api_base(source.favorites_url)
+    mirrors = asmr_source.parse_mirrors(source.api_mirrors) if source.api_mirrors else None
+    token = source.cookie or ""
+
+    if payload.password:
+        # Need both for a fresh login. payload.username falls back to stored.
+        login_name = (payload.username or source.username or "").strip()
+        if not login_name:
+            raise HTTPException(status_code=400, detail="登录需要用户名")
+        try:
+            working_base, token = asmr_source.login(
+                preferred_base=api_base,
+                name=login_name,
+                password=payload.password,
+                mirrors=mirrors,
+            )
+        except asmr_source.AsmrApiError as exc:
+            source.status = "error"
+            source.last_error = f"登录失败：{exc}"
+            db.commit()
+            raise HTTPException(status_code=401, detail=f"asmr.one 登录失败：{exc}")
+        # login() may have switched to a working mirror — persist the new base
+        # so subsequent syncs start there.
+        source.favorites_url = working_base
+        source.cookie = token
+        source.username = login_name
+    elif not token:
+        raise HTTPException(
+            status_code=400,
+            detail="尚未登录 asmr.one：请填写账号密码后再同步（密码只用于换取 token，不会存储）",
+        )
+
+    source.status = "syncing"
+    source.last_error = None
+    db.commit()
+
+    try:
+        # Choose source: explicit playlist URL takes precedence; otherwise pull
+        # the user's "marked" works.
+        if source.playlist_url:
+            playlist_id = asmr_source.extract_playlist_id(source.playlist_url)
+            parsed_works = asmr_source.fetch_playlist_works(
+                preferred_base=source.favorites_url,
+                token=token,
+                playlist_id=playlist_id,
+                page_limit=payload.page_limit,
+                mirrors=mirrors,
+            )
+        else:
+            parsed_works = asmr_source.fetch_marked_works(
+                working_base=source.favorites_url,
+                token=token,
+                page_limit=payload.page_limit,
+                mirrors=mirrors,
+            )
+
+        now = datetime.utcnow()
+        existing_items = {
+            item.external_id: item
+            for item in db.query(models.ExternalFavoriteItem)
+            .filter(models.ExternalFavoriteItem.source_id == source.id)
+            .all()
+        }
+        # Mirror wnacg: blank all sync_positions first, then re-assign in the
+        # order the API returned (newest-first marked or playlist sequence).
+        # Items that fall out of the page window keep their row but lose
+        # sync_position, so the UI's "currently in source" ordering reflects
+        # only what we just saw.
+        for db_item in existing_items.values():
+            db_item.sync_position = None
+
+        deduped = {w.rj_code: w for w in parsed_works if w.rj_code}
+        for sync_position, work in enumerate(deduped.values()):
+            db_item = existing_items.get(work.rj_code)
+            if not db_item:
+                db_item = models.ExternalFavoriteItem(
+                    source=source,
+                    source_type="asmr",
+                    external_id=work.rj_code,
+                    title=work.title or work.rj_code,
+                    url=work.work_url or "",
+                    cover_url=work.cover_url,
+                    # Reuse category_name for the circle (visible chip in UI);
+                    # category_id stays NULL since asmr has no category system.
+                    category_name=work.circle or None,
+                    sync_position=sync_position,
+                    last_seen_at=now,
+                )
+                db.add(db_item)
+            else:
+                db_item.title = work.title or db_item.title
+                db_item.url = work.work_url or db_item.url
+                db_item.cover_url = work.cover_url or db_item.cover_url
+                db_item.category_name = work.circle or db_item.category_name
+                db_item.sync_position = sync_position
+                db_item.last_seen_at = now
+
+        source.status = "ok"
+        source.last_synced_at = now
+        source.last_error = None
+        db.commit()
+        db.refresh(source)
+
+        items = (
+            db.query(models.ExternalFavoriteItem)
+            .filter(models.ExternalFavoriteItem.source_id == source.id)
+            .order_by(
+                models.ExternalFavoriteItem.sync_position.is_(None),
+                models.ExternalFavoriteItem.sync_position.asc(),
+                models.ExternalFavoriteItem.id.desc(),
+            )
+            .all()
+        )
+        return {
+            "source": source,
+            "synced_count": len(deduped),
+            "items": [serialize_external_favorite_item(item, db) for item in items],
+        }
+    except HTTPException:
+        source.status = "error"
+        source.last_error = "同步失败"
+        db.commit()
+        raise
+    except asmr_source.AsmrApiError as exc:
+        source.status = "error"
+        source.last_error = f"API 错误：{exc}"
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"同步 ASMR 收藏失败：{exc}")
+    except Exception as exc:
+        source.status = "error"
+        source.last_error = str(exc)
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"同步 ASMR 收藏失败：{exc}")
