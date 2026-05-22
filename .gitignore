@@ -52,6 +52,18 @@ backend/data/
 backend/uploads/
 backend/.lostfound/
 backend/_scratch/
+backend/app/library.dump.sql
+backend/app/library.recovered.sql
+backend/app/library.recover.err
+
+# --- External-favorite covers (user-downloaded ASMR / WNACG cover JPGs) -----
+# Same rationale as .thumbnails — these are downloaded by the sync pipeline
+# and grow forever with the library. Source of truth lives in the DB
+# (ExternalFavoriteItem.cover_url) + the cover_path on Media rows.
+covers/
+
+# --- Claude Code working dir ------------------------------------------------
+.claude/
 
 # --- Logs --------------------------------------------------------------------
 logs/
