@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import zipfile
 import traceback
@@ -16,6 +17,11 @@ from .dedup import worker as dedup_worker
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm', '.flv', '.ts', '.m4v'}
 MANGA_EXTENSIONS = {'.zip', '.cbz'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.avif'}
+# Single-file audio (one Media row per file). ASMR works downloaded via
+# /external/asmr/downloads use a folder-level Media row instead and live in
+# Folder.scan_mode='asmr_work' so the scanner skips them — see
+# ensure_external_audio_library() in main.py.
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus'}
 
 # Folders to skip (case-insensitive)
 SKIP_FOLDERS = {'mask', 'result', 'inpainted', '.thumbnails', 'node_modules', '.git', '.vite'}
@@ -304,6 +310,80 @@ def has_image_file(files):
     return any(os.path.splitext(file)[1].lower() in IMAGE_EXTENSIONS for file in files)
 
 
+def has_audio_file_recursive(work_root):
+    """True iff `work_root` contains at least one audio file at any depth.
+    Used by audio_work scan mode to drop tracks.json-marked folders that
+    somehow ended up empty (broken download)."""
+    for _, _, files in os.walk(work_root):
+        for file in files:
+            if os.path.splitext(file)[1].lower() in AUDIO_EXTENSIONS:
+                return True
+    return False
+
+
+def read_tracks_json(work_root):
+    """Try to load the ASMR-downloader-style tracks.json sitting at the work
+    root. Returns the parsed dict on success, None on missing / corrupt file.
+
+    Shape (per asmr-one-style tooling):
+      {
+        "title": str,
+        "url": str,                 # asmr.one work page
+        "tracks": [
+          {"index": int, "title": str, "rel": "■03/01.mp3", "duration": float},
+          ...
+        ]
+      }
+    """
+    path = os.path.join(work_root, "tracks.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:  # noqa: BLE001 - any parse / IO failure is "no manifest"
+        print(f"  ! Failed to parse tracks.json at {path}: {exc}")
+        return None
+
+
+def count_audio_tracks(work_root):
+    """How many audio files inside this work root (any depth). Used as
+    page_count for audio_work Media rows so the UI has something to display."""
+    total = 0
+    for _, _, files in os.walk(work_root):
+        total += sum(1 for f in files if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS)
+    return total
+
+
+def get_work_cover_path(work_root):
+    """First image directly inside the work root, used as the audio_work
+    thumbnail source. ASMR downloads sometimes ship a cover next to
+    tracks.json; absent that, returns None and the UI shows a placeholder."""
+    try:
+        for entry in sorted(os.listdir(work_root)):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in IMAGE_EXTENSIONS:
+                return os.path.join(work_root, entry)
+    except OSError:
+        pass
+    return None
+
+
+def make_work_thumbnail(cover_path, thumb_path):
+    """Copy/resize an existing cover file into the thumbnail cache. Same
+    400x600 target as get_folder_thumbnail() so cards line up visually."""
+    try:
+        img = Image.open(cover_path)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail((400, 600))
+        img.save(thumb_path, "JPEG")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error generating work thumbnail: {exc}")
+        return False
+
+
 def apply_local_dedup_precheck(
     media: "models.Media",
     library_title_index: set,
@@ -332,6 +412,8 @@ def media_type_for_extension(scan_mode, ext):
         return "video"
     if scan_mode == "image" and ext in IMAGE_EXTENSIONS:
         return "image"
+    if scan_mode == "audio" and ext in AUDIO_EXTENSIONS:
+        return "audio"
     if scan_mode == "auto":
         if ext in VIDEO_EXTENSIONS:
             return "video"
@@ -339,6 +421,8 @@ def media_type_for_extension(scan_mode, ext):
             return "manga"
         if ext in IMAGE_EXTENSIONS:
             return "image"
+        if ext in AUDIO_EXTENSIONS:
+            return "audio"
     return None
 
 
@@ -435,6 +519,96 @@ def scan_folder(folder_id: int):
                     # Skip individual file processing for manga mode
                     continue
 
+                # --- AUDIO WORK FOLDER LOGIC ---
+                # Same shape as manga mode but for audio. A "work" is a
+                # folder that contains audio files (any depth) — identified
+                # by one of:
+                #   - a tracks.json manifest (asmr-one-downloader style)
+                #   - a source.txt breadcrumb (our own download pipeline)
+                #   - audio files directly in this folder (flat album layout)
+                # We refuse to recurse past the work root so a nested
+                # "■03_本篇" folder full of mp3s does NOT itself become a
+                # second work — the parent is the work, that's a sub-bucket.
+                if folder.scan_mode == "audio_work":
+                    has_marker = ("tracks.json" in files) or ("source.txt" in files)
+                    has_audio_here = any(
+                        os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS for f in files
+                    )
+                    is_work_root = (has_marker and has_audio_file_recursive(root)) or has_audio_here
+                    if is_work_root:
+                        scanned_paths.add(root)
+                        existing = existing_media.get(root)
+                        manifest = read_tracks_json(root)
+                        track_count = (
+                            len(manifest["tracks"])
+                            if manifest and isinstance(manifest.get("tracks"), list)
+                            else count_audio_tracks(root)
+                        )
+                        total_duration = None
+                        if manifest and isinstance(manifest.get("tracks"), list):
+                            durations = [
+                                float(t.get("duration") or 0)
+                                for t in manifest["tracks"]
+                                if isinstance(t, dict)
+                            ]
+                            total_duration = int(sum(durations)) if durations else None
+
+                        if not existing:
+                            rel_path = os.path.relpath(root, folder.path)
+                            # Manifest title beats folder name when available — the
+                            # folder name is often noisy (RJ suffix, version
+                            # markers), the manifest title is the clean one the
+                            # site exposes.
+                            title = (manifest or {}).get("title") or (
+                                os.path.basename(root)
+                                if rel_path != "."
+                                else (os.path.basename(os.path.normpath(folder.path)) or folder.path)
+                            )
+                            source_url = (manifest or {}).get("url") or None
+                            media = models.Media(
+                                folder_id=folder.id,
+                                title=title,
+                                relative_path=rel_path,
+                                absolute_path=root,
+                                media_type='audio',
+                                extension='.dir',
+                                file_size=0,
+                                page_count=track_count,
+                                duration=total_duration,
+                                source_url=source_url,
+                                source_site='asmr' if source_url and 'asmr.one' in source_url else None,
+                                is_missing=False,
+                            )
+                            cover_src = get_work_cover_path(root)
+                            if cover_src:
+                                thumb_name = f"thumb_audio_{hashlib.md5(root.encode()).hexdigest()[:12]}_{datetime.now().timestamp()}.jpg"
+                                thumb_path = os.path.join(thumbnail_dir, thumb_name)
+                                if make_work_thumbnail(cover_src, thumb_path):
+                                    media.cover_path = thumb_name
+
+                            apply_local_dedup_precheck(media, library_title_index, pending_dedup_paths)
+                            media_batch.append(media)
+                            existing_media[root] = media
+                            processed_count += 1
+                            print(f"  + Added Audio Work: {media.title}")
+
+                            if len(media_batch) >= BATCH_SIZE:
+                                db.add_all(media_batch)
+                                db.commit()
+                                media_batch = []
+                        else:
+                            existing.is_missing = False
+                            existing.missing_since = None
+                            # Refresh derived fields in case the user repacked the
+                            # work folder (added tracks, fixed manifest, etc.).
+                            if existing.page_count != track_count:
+                                existing.page_count = track_count
+                            if total_duration is not None and existing.duration != total_duration:
+                                existing.duration = total_duration
+                        dirs[:] = []
+                    # Skip per-file processing — work folders are the unit here
+                    continue
+
                 for file in files:
                     try:
                         file_path = os.path.join(root, file)
@@ -511,6 +685,19 @@ def scan_folder(folder_id: int):
                             thumb_path = os.path.join(thumbnail_dir, thumb_name)
                             if get_image_thumbnail(file_path, thumb_path):
                                 media.cover_path = thumb_name
+
+                        elif target_type == 'audio':
+                            # Single-file audio: one row per file, no cover (reading
+                            # embedded ID3 art needs mutagen and isn't in deps; the
+                            # UI falls back to a placeholder which is good enough for
+                            # casual listening). duration is left None — the HTML5
+                            # <audio> element + Android ExoPlayer both probe it on
+                            # load, so we don't need to call ffprobe at scan time.
+                            media = models.Media(
+                                folder_id=folder.id, title=file, relative_path=rel_path,
+                                absolute_path=file_path, media_type='audio', extension=ext, file_size=file_size,
+                                is_missing=False,
+                            )
 
                         if media:
                             apply_local_dedup_precheck(media, library_title_index, pending_dedup_paths)

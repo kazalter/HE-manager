@@ -94,6 +94,145 @@ def get_ranged_file_response(request: Request, file_path: str):
         media_type=media_type
     )
 
+
+# ============================================================================
+# Audio (ASMR) — track scan + lyrics parsing
+# ============================================================================
+# An "audio" Media row points at a folder of audio files (the work) instead of
+# a single file like video/manga do. /audio/{id}/tracks lists the files in
+# deterministic 1-based order; /audio/{id}/track/{i} streams one of them;
+# /audio/{id}/track/{i}/lyrics returns the timed lines from a sidecar LRC/VTT/
+# SRT next to it. The Android client (AudioRepository.kt) is the consumer.
+
+AUDIO_TRACK_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
+LYRIC_EXTS = (".lrc", ".vtt", ".srt")
+
+
+def scan_audio_tracks(item_dir: str) -> List[dict]:
+    """Walk an ASMR work folder and return tracks in stable display order.
+
+    Order is folder-then-filename across the whole tree (`os.walk` ordered by
+    `sorted()`), so re-runs produce identical indices. Each entry carries the
+    absolute path (for streaming) and a sibling lyric path if a same-stem
+    .lrc/.vtt/.srt exists next to the audio file."""
+    if not item_dir or not os.path.isdir(item_dir):
+        return []
+
+    tracks: List[dict] = []
+    for root, dirs, files in os.walk(item_dir):
+        dirs.sort()
+        for fname in sorted(files):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in AUDIO_TRACK_EXTS:
+                continue
+            abs_path = os.path.join(root, fname)
+            rel_path = os.path.relpath(abs_path, item_dir).replace(os.sep, "/")
+            stem = os.path.splitext(fname)[0]
+            lyrics_abs = None
+            for lyric_ext in LYRIC_EXTS:
+                candidate = os.path.join(root, stem + lyric_ext)
+                if os.path.exists(candidate):
+                    lyrics_abs = candidate
+                    break
+            tracks.append({
+                "title": fname,
+                "rel": rel_path,
+                "abs_path": abs_path,
+                "lyrics_abs": lyrics_abs,
+            })
+
+    for index, track in enumerate(tracks, start=1):
+        track["index"] = index
+    return tracks
+
+
+_LRC_LINE_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)")
+_VTT_SRT_TIME_RE = re.compile(r"(\d+):(\d+):(\d+(?:[.,]\d+)?)")
+
+
+def _hms_to_seconds(h: str, m: str, s: str) -> float:
+    return int(h) * 3600 + int(m) * 60 + float(s.replace(",", "."))
+
+
+def _parse_lrc(text: str) -> List[dict]:
+    """LRC: one or more `[mm:ss.xx]` tags followed by lyric text per line.
+    A single line can carry multiple timestamps (repeats); we expand each."""
+    lines: List[dict] = []
+    for raw in text.splitlines():
+        # Strip metadata tags like [ti:...], [ar:...] — they have non-numeric
+        # first chars, so the regex naturally skips them.
+        stamps = []
+        rest = raw
+        while True:
+            m = _LRC_LINE_RE.match(rest)
+            if not m:
+                break
+            stamps.append(int(m.group(1)) * 60 + float(m.group(2)))
+            rest = m.group(3)
+            # multiple stamps may be back-to-back: "[00:01.20][00:05.40]text"
+            if not rest.startswith("["):
+                break
+        if not stamps:
+            continue
+        body = rest.strip()
+        if not body:
+            continue
+        for t in stamps:
+            lines.append({"t": t, "text": body})
+    return lines
+
+
+def _parse_vtt_or_srt(text: str) -> List[dict]:
+    """VTT and SRT have similar cue blocks: a time line `HH:MM:SS[.,]xxx -->
+    HH:MM:SS[.,]xxx` followed by 1+ text lines, blocks separated by blank
+    lines. We only need the start time + concatenated text."""
+    lines: List[dict] = []
+    blocks = re.split(r"\r?\n\s*\r?\n", text.strip())
+    for block in blocks:
+        block_lines = [ln for ln in block.splitlines() if ln.strip()]
+        time_line = None
+        body_lines: List[str] = []
+        for ln in block_lines:
+            if "-->" in ln and time_line is None:
+                time_line = ln
+            elif time_line is not None:
+                body_lines.append(ln)
+        if time_line is None or not body_lines:
+            continue
+        m = _VTT_SRT_TIME_RE.search(time_line)
+        if not m:
+            continue
+        start = _hms_to_seconds(m.group(1), m.group(2), m.group(3))
+        body = " ".join(body_lines).strip()
+        if body:
+            lines.append({"t": start, "text": body})
+    return lines
+
+
+def parse_lyrics_file(path: str) -> List[dict]:
+    """Normalise an LRC/VTT/SRT file to [{t: seconds, text: str}], sorted by
+    start time. Returns [] on any parse / encoding failure — the endpoint is
+    meant to be a guaranteed 200 with empty lines for tracks that don't have
+    real lyrics."""
+    if not path or not os.path.exists(path):
+        return []
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    # Some LRCs ship as UTF-8 with BOM; the open() above already handles it.
+    if ext == ".lrc":
+        lines = _parse_lrc(text)
+    elif ext in (".vtt", ".srt"):
+        lines = _parse_vtt_or_srt(text)
+    else:
+        lines = []
+    lines.sort(key=lambda item: item["t"])
+    return lines
+
+
 def ensure_folder_option_columns():
     inspector = inspect(engine)
     columns = {column["name"] for column in inspector.get_columns("folders")}
@@ -304,7 +443,27 @@ def safe_filename(value: str, fallback: str = "item") -> str:
     return (cleaned or fallback)[:120]
 
 
+def get_asmr_storage_dirs(source: models.ExternalFavoriteSource, download_root_path: Optional[str] = None):
+    """ASMR-side counterpart to get_external_storage_dirs(): returns
+    (root, audio_dir). ASMR works are audio + subtitles, not page-based
+    manga, so they live under `{root}/audio/{title}_{RJ}/...` instead of
+    sharing the manga folder."""
+    root = normalize_download_root(
+        download_root_path if download_root_path is not None else source.download_root_path,
+        source.source_type or "asmr",
+    )
+    audio_dir = os.path.join(root, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    return root, audio_dir
+
+
 def external_item_download_dir(item: models.ExternalFavoriteItem, source: models.ExternalFavoriteSource, download_root_path: Optional[str] = None) -> str:
+    if (source.source_type or "wnacg") == "asmr":
+        _, audio_dir = get_asmr_storage_dirs(source, download_root_path)
+        # external_id for ASMR is the RJ code (e.g. "RJ123456"); keep the
+        # title-first naming so the directory is human-skimmable in a file
+        # explorer while the RJ suffix guarantees uniqueness.
+        return os.path.join(audio_dir, f"{safe_filename(item.title, 'asmr')}_{item.external_id}")
     _, _, manga_dir = get_external_storage_dirs(source, download_root_path)
     return os.path.join(manga_dir, f"{safe_filename(item.title, 'wnacg')}_{item.external_id}")
 
@@ -332,13 +491,121 @@ def ensure_external_manga_library(source: models.ExternalFavoriteSource, downloa
     return folder
 
 
+def ensure_external_audio_library(source: models.ExternalFavoriteSource, download_root_path: str, db: Session) -> models.Folder:
+    """ASMR-side counterpart to ensure_external_manga_library(): the audio
+    subdir gets a Folder row with scan_mode='audio_work' so the /media endpoint's
+    media_type='audio' filter can later pick up these items.
+
+    `scan_mode='audio_work'` is the folder-of-audio-files mode (one Media per
+    work folder), shared with the manual "audio work" library users can add
+    in SettingsView. The scanner's audio_work branch is idempotent: it will
+    skip re-creating Media rows that this function already upserted at
+    download time."""
+    _, audio_dir = get_asmr_storage_dirs(source, download_root_path)
+    folder = db.query(models.Folder).filter(models.Folder.path == audio_dir).first()
+    if folder:
+        folder.scan_mode = "audio_work"
+        folder.status = "idle"
+        db.commit()
+        db.refresh(folder)
+        return folder
+
+    folder = models.Folder(
+        path=audio_dir,
+        scan_mode="audio_work",
+        status="idle",
+        thumbnail_enabled=False,
+        thumbnail_interval=1,
+    )
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+    return folder
+
+
+def upsert_external_downloaded_audio_media(
+    item: models.ExternalFavoriteItem,
+    source: models.ExternalFavoriteSource,
+    item_dir: str,
+    download_root_path: str,
+    db: Session,
+    track_count: int,
+    total_bytes: int,
+) -> models.Media:
+    """Register a freshly-downloaded ASMR work as a Media row so the UI can
+    surface it under /media?media_type=audio and the 'already downloaded'
+    badge in AsmrPanel can light up via find_local_media_for_external_item.
+
+    The row is intentionally minimal: extension='.dir' (the work is a folder,
+    not a single file) and page_count holds the track count so list views
+    have something meaningful to show. cover_path is populated from the
+    sidecar cover file dropped by download_asmr_item — using the same
+    scanner helpers as audio_work scan mode so both code paths produce
+    identical thumbnails."""
+    folder = ensure_external_audio_library(source, download_root_path, db)
+    rel_path = os.path.relpath(item_dir, folder.path)
+
+    media = (
+        db.query(models.Media)
+        .filter(models.Media.absolute_path == item_dir, models.Media.media_type == "audio")
+        .first()
+    )
+    if media:
+        media.folder_id = folder.id
+        media.title = item.title
+        media.relative_path = rel_path
+        media.file_size = total_bytes
+        media.page_count = track_count
+        media.source_url = item.url
+        media.source_site = source.source_type
+        media.is_missing = False
+    else:
+        media = models.Media(
+            folder_id=folder.id,
+            title=item.title,
+            relative_path=rel_path,
+            absolute_path=item_dir,
+            media_type="audio",
+            extension=".dir",
+            file_size=total_bytes,
+            page_count=track_count,
+            source_url=item.url,
+            source_site=source.source_type,
+            is_missing=False,
+        )
+        db.add(media)
+        db.flush()
+
+    # Pull a thumbnail from the cover file download_asmr_item dropped in the
+    # work folder. Only generate when there's no cover yet (avoid orphan
+    # thumb files piling up across re-runs of the same RJ).
+    if not media.cover_path:
+        cover_src = scanner.get_work_cover_path(item_dir)
+        if cover_src:
+            digest = hashlib.md5(item_dir.encode("utf-8")).hexdigest()[:12]
+            thumb_name = f"thumb_audio_{digest}_{int(datetime.now().timestamp())}.jpg"
+            thumb_path = os.path.join(THUMBNAIL_DIR, thumb_name)
+            if scanner.make_work_thumbnail(cover_src, thumb_path):
+                media.cover_path = thumb_name
+
+    folder.last_scanned_at = datetime.now()
+    db.commit()
+    db.refresh(media)
+    return media
+
+
 def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Session) -> Optional[models.Media]:
+    # WNACG works are manga; ASMR works are audio. The expected media_type is
+    # the only branch difference — everything else (source_url/source_site
+    # match, then absolute_path fallback) is identical.
+    expected_media_type = "audio" if (item.source_type or "") == "asmr" else "manga"
+
     media = (
         db.query(models.Media)
         .filter(
             models.Media.source_url == item.url,
             models.Media.source_site == item.source_type,
-            models.Media.media_type == "manga",
+            models.Media.media_type == expected_media_type,
             models.Media.is_missing == False,
         )
         .first()
@@ -358,7 +625,7 @@ def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Se
         db.query(models.Media)
         .filter(
             models.Media.absolute_path == item_dir,
-            models.Media.media_type == "manga",
+            models.Media.media_type == expected_media_type,
             models.Media.is_missing == False,
         )
         .first()
@@ -370,6 +637,13 @@ def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Se
             db.commit()
             db.refresh(media)
         return media
+
+    # Auto-link an existing downloaded folder back to a Media row. ASMR can't
+    # safely auto-upsert here because it needs the live track count / byte
+    # total that only the download path knows, so we just bail — the row gets
+    # created when the user actually downloads via run_asmr_download_job.
+    if expected_media_type == "audio":
+        return None
 
     return upsert_external_downloaded_media(item, source, item_dir, source.download_root_path, db)
 
@@ -649,6 +923,302 @@ def run_wnacg_download_job(job_id: str, item_ids: List[int], download_root_path:
     except DownloadCancelled:
         job["status"] = "canceled"
         job["message"] = "下载已取消，未完成的漫画已删除"
+    except Exception as exc:
+        job["status"] = "failed"
+        job["message"] = str(exc)
+    finally:
+        db.close()
+
+
+# ============================================================================
+# ASMR download pipeline
+# ============================================================================
+# Mirrors the WNACG download flow above, but the unit of work is one ASMR work
+# (= a folder of audio + optional subtitle files) instead of one manga (= a
+# folder of page images). Key differences:
+#   - tracks come from /api/tracks/{rj} as a nested folder tree
+#   - format / SE-version filters are stored on the source row from sync time
+#   - single files can be hundreds of MB / GB -> stream to disk, never load
+#     the whole body into RAM
+#   - download root layout: {root}/audio/{title}_{RJ}/{...nested folders}
+
+
+def prepare_asmr_download_plan_for_item(item: models.ExternalFavoriteItem, source: models.ExternalFavoriteSource, download_root_path: str):
+    """ASMR counterpart to prepare_wnacg_download_plan(): fetch the /api/tracks
+    tree, apply the source's format + SE-version filters, and resolve each
+    track + subtitle to a local destination under the work's folder."""
+    item_dir = external_item_download_dir(item, source, download_root_path)
+
+    token = source.cookie or ""
+    if not token:
+        raise RuntimeError("ASMR 来源未登录，请先同步一次以获取令牌")
+
+    working_base = source.favorites_url or asmr_source.DEFAULT_API_BASE
+    mirrors = asmr_source.parse_mirrors(source.api_mirrors) if source.api_mirrors else None
+    tree = asmr_source.fetch_work_tracks(working_base, token, item.external_id, mirrors=mirrors)
+
+    planned_files = asmr_source.prepare_asmr_download_plan(
+        tree,
+        audio_format=source.audio_format_filter or "all",
+        audio_version=source.audio_version_filter or "all",
+        include_subtitles=True,
+    )
+    if not planned_files:
+        raise RuntimeError("没有可下载的音频文件（作品 tracks 为空）")
+
+    files = []
+    for planned in planned_files:
+        local_path = os.path.join(item_dir, *planned.rel_segments)
+        files.append({
+            "url": planned.download_url,
+            "local_path": local_path,
+            "kind": planned.kind,
+            "size": planned.size,
+        })
+
+    return {
+        "item_dir": item_dir,
+        "files": files,
+    }
+
+
+def download_asmr_item(item: models.ExternalFavoriteItem, source: models.ExternalFavoriteSource, plan: dict, job: Optional[dict] = None):
+    """Stream every file in `plan["files"]` to disk under `plan["item_dir"]`,
+    updating job counters as bytes come in. Cancellation is checked between
+    files AND inside the per-chunk read loop so the user doesn't have to wait
+    for a multi-GB WAV to finish before the cancel kicks in."""
+    item_dir = plan["item_dir"]
+    files = plan["files"]
+    os.makedirs(item_dir, exist_ok=True)
+
+    downloaded = 0
+    skipped = 0
+    total_bytes = 0
+    audio_track_count = 0
+    task = find_task(job, item.id) if job is not None else None
+
+    for index, file_info in enumerate(files, start=1):
+        if job is not None and is_cancel_requested(job):
+            raise DownloadCancelled(item_dir)
+
+        local_path = file_info["local_path"]
+        if file_info["kind"] == "audio":
+            audio_track_count += 1
+
+        # Skip if the file already exists with a non-zero size (resume on rerun).
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            skipped += 1
+            existing_size = os.path.getsize(local_path)
+            total_bytes += existing_size
+            if job is not None:
+                job["pages_done"] += 1
+                job["current_book_downloaded_pages"] += 1
+                job["downloaded_bytes"] += existing_size
+                if task is not None:
+                    task["downloaded_pages"] += 1
+            continue
+
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        tmp_path = local_path + ".part"
+        bytes_written = 0
+        try:
+            with asmr_source.open_file_stream(file_info["url"]) as response:
+                with open(tmp_path, "wb") as out_file:
+                    while True:
+                        if job is not None and is_cancel_requested(job):
+                            raise DownloadCancelled(item_dir)
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        bytes_written += len(chunk)
+                        if job is not None:
+                            job["downloaded_bytes"] += len(chunk)
+            os.replace(tmp_path, local_path)
+        except BaseException:
+            # Leave any partial .part for inspection-free cleanup by
+            # cleanup_incomplete_asmr_download; just don't let the tmp pollute.
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        downloaded += 1
+        total_bytes += bytes_written
+        if job is not None:
+            job["pages_done"] += 1
+            job["current_book_downloaded_pages"] += 1
+            if task is not None:
+                task["downloaded_pages"] += 1
+        time.sleep(0.05)
+
+    # Download the cover image alongside the audio so the local work folder
+    # is self-contained (and audio_work scanner / upsert can pick it up as
+    # the Media row's thumbnail). asmr.one CDN serves pre-authorised URLs
+    # so no bearer token is needed — same path as fetch_file uses.
+    cover_url = (item.cover_url or "").strip()
+    existing_cover = scanner.get_work_cover_path(item_dir) if cover_url else None
+    if cover_url and not existing_cover:
+        try:
+            content, content_type = asmr_source.fetch_file(cover_url)
+            ext = get_cover_extension(content_type, cover_url)
+            cover_local = os.path.join(item_dir, f"cover{ext}")
+            with open(cover_local, "wb") as cover_file:
+                cover_file.write(content)
+        except Exception as exc:  # noqa: BLE001 — cover is nice-to-have
+            print(f"  ! Failed to download cover for {item.title!r}: {exc}")
+
+    # Drop a small breadcrumb file so the local folder is self-describing if
+    # the DB ever gets wiped. Matches WNACG's source.txt convention.
+    info_path = os.path.join(item_dir, "source.txt")
+    with open(info_path, "w", encoding="utf-8") as info_file:
+        info_file.write(f"{item.title}\n{item.url}\n{item.external_id}\n")
+
+    return {
+        "item_id": item.id,
+        "title": item.title,
+        "status": "completed",
+        "path": item_dir,
+        "files": len(files),
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "total_bytes": total_bytes,
+        "audio_track_count": audio_track_count,
+    }
+
+
+def cleanup_incomplete_asmr_download(item_dir: str, expected_files: int):
+    """Drop a partly-downloaded work so the next run starts fresh (or, if the
+    user has the same RJ in their selection again, doesn't pick up half-files).
+    Counts files recursively because the work is a nested folder tree."""
+    if not item_dir or not os.path.isdir(item_dir):
+        return
+
+    actual = 0
+    for _, _, files in os.walk(item_dir):
+        actual += len([f for f in files if not f.endswith(".part") and f != "source.txt"])
+    if actual >= expected_files and expected_files > 0:
+        return
+
+    shutil.rmtree(item_dir, ignore_errors=True)
+
+
+def run_asmr_download_job(job_id: str, item_ids: List[int], download_root_path: str):
+    db = database.SessionLocal()
+    job = DOWNLOAD_JOBS[job_id]
+    try:
+        planned_downloads = []
+        job["status"] = "preparing"
+        job["message"] = "正在准备下载"
+
+        for item_id in item_ids:
+            if is_cancel_requested(job):
+                raise DownloadCancelled()
+
+            task = find_task(job, item_id)
+            item = db.query(models.ExternalFavoriteItem).filter(models.ExternalFavoriteItem.id == item_id).first()
+            if not item:
+                job["failed"] += 1
+                if task is not None:
+                    task["status"] = "failed"
+                    task["error"] = "条目不存在"
+                job["results"].append({"item_id": item_id, "status": "failed", "error": "条目不存在"})
+                continue
+            if task is not None:
+                task["title"] = item.title
+            source = get_source_or_404(item.source_id, db)
+            if (source.source_type or "") != "asmr":
+                job["failed"] += 1
+                if task is not None:
+                    task["status"] = "failed"
+                    task["error"] = "不是 ASMR 条目"
+                job["results"].append({"item_id": item_id, "title": item.title, "status": "failed", "error": "不是 ASMR 条目"})
+                continue
+            if source.download_root_path != download_root_path:
+                source.download_root_path = download_root_path
+                db.commit()
+            local_media = find_local_media_for_external_item(item, db)
+            if local_media:
+                job["completed"] += 1
+                if task is not None:
+                    task["status"] = "success"
+                job["results"].append({
+                    "item_id": item.id,
+                    "title": item.title,
+                    "status": "completed",
+                    "local_media_id": local_media.id,
+                    "skipped": True,
+                })
+                continue
+            ensure_external_audio_library(source, download_root_path, db)
+            try:
+                job["message"] = f"正在准备：{item.title}"
+                plan = prepare_asmr_download_plan_for_item(item, source, download_root_path)
+                job["pages_total"] += len(plan["files"])
+                if task is not None:
+                    task["total_pages"] = len(plan["files"])
+                planned_downloads.append((item, source, plan))
+            except Exception as exc:
+                job["failed"] += 1
+                if task is not None:
+                    task["status"] = "failed"
+                    task["error"] = str(exc)
+                job["results"].append({"item_id": item.id, "title": item.title, "status": "failed", "error": str(exc)})
+
+        job["bytes_total_known"] = False
+        job["status"] = "running"
+        for item, source, plan in planned_downloads:
+            if is_cancel_requested(job):
+                raise DownloadCancelled()
+
+            task = find_task(job, item.id)
+            try:
+                job["message"] = f"正在下载：{item.title}"
+                job["current_book_title"] = item.title
+                job["current_book_total_pages"] = len(plan["files"])
+                job["current_book_downloaded_pages"] = 0
+                if task is not None:
+                    task["status"] = "downloading"
+                result = download_asmr_item(item, source, plan, job)
+                local_media = upsert_external_downloaded_audio_media(
+                    item,
+                    source,
+                    result["path"],
+                    download_root_path,
+                    db,
+                    track_count=result["audio_track_count"],
+                    total_bytes=result["total_bytes"],
+                )
+                result["local_media_id"] = local_media.id
+                job["completed"] += 1
+                if task is not None:
+                    task["status"] = "success"
+                job["results"].append(result)
+            except DownloadCancelled as exc:
+                cleanup_incomplete_asmr_download(exc.item_dir or plan["item_dir"], len(plan["files"]))
+                if task is not None:
+                    task["status"] = "failed"
+                    task["error"] = "已取消"
+                job["results"].append({"item_id": item.id, "title": item.title, "status": "canceled", "path": plan["item_dir"]})
+                raise
+            except Exception as exc:
+                job["failed"] += 1
+                if task is not None:
+                    task["status"] = "failed"
+                    task["error"] = str(exc)
+                job["results"].append({"item_id": item.id, "title": item.title, "status": "failed", "error": str(exc)})
+
+        job["current_book_title"] = ""
+        job["current_book_total_pages"] = 0
+        job["current_book_downloaded_pages"] = 0
+
+        job["status"] = "completed"
+        job["message"] = "下载完成"
+    except DownloadCancelled:
+        job["status"] = "canceled"
+        job["message"] = "下载已取消，未完成的作品已清理"
     except Exception as exc:
         job["status"] = "failed"
         job["message"] = str(exc)
@@ -1214,7 +1784,22 @@ def update_external_source(source_id: int, payload: schemas.ExternalFavoriteSour
         source.favorites_url = data["favorites_url"]
     if "download_root_path" in data:
         source.download_root_path = (data["download_root_path"] or "").strip() or None
-        get_external_storage_dirs(source)
+        # download_root_path setup is wnacg-shaped (creates a manga dir).
+        # Skip the side-effect for asmr sources — their root layout is handled
+        # by get_asmr_storage_dirs() at download time.
+        if (source.source_type or "wnacg") != "asmr":
+            get_external_storage_dirs(source)
+    # ASMR knobs: "all"/"no_wav"/"mp3_only" + "all"/"no_se"/"se_only". Empty
+    # string falls back to "all" so the front-end can clear without nulling.
+    if "audio_format_filter" in data:
+        source.audio_format_filter = (data["audio_format_filter"] or "").strip() or "all"
+    if "audio_version_filter" in data:
+        source.audio_version_filter = (data["audio_version_filter"] or "").strip() or "all"
+    if "playlist_url" in data:
+        # null / empty string both mean "no playlist, use marked works"
+        source.playlist_url = (data["playlist_url"] or "").strip() or None
+    if "api_mirrors" in data:
+        source.api_mirrors = (data["api_mirrors"] or "").strip() or None
     db.commit()
     db.refresh(source)
     return source
@@ -1508,6 +2093,156 @@ def stream_mobile_media(request: Request, media_id: int, _: models.User = Depend
         db.commit()
 
     return get_ranged_file_response(request, media.absolute_path)
+
+
+# ============================================================================
+# /audio/{id}/* — ASMR audio player endpoints
+# ============================================================================
+# Consumer: android-app/audio/AudioRepository.kt. Web has no audio view yet.
+# Auth: kept open per AudioRepository's contract ("the audio streaming
+# endpoints are unauthenticated server-side ... we still pass the token in
+# the stream URL ... ignored harmlessly today"). The token query param is
+# ignored because the route signatures don't declare it.
+
+def _get_audio_media_or_404(media_id: int, db: Session) -> models.Media:
+    media = get_media_or_404(media_id, db)
+    if media.media_type != "audio":
+        raise HTTPException(status_code=400, detail="This media is not an audio work")
+    if not os.path.exists(media.absolute_path):
+        if not media.is_missing:
+            media.is_missing = True
+            media.missing_since = datetime.utcnow()
+            db.commit()
+        raise HTTPException(status_code=404, detail="Audio file/folder not found on disk")
+    return media
+
+
+def _resolve_audio_tracks(media: models.Media) -> List[dict]:
+    """Return the in-display-order track list for an audio Media row.
+
+    Two shapes are supported under the same `media_type='audio'`:
+      - work folder (`extension='.dir'`, ASMR downloads or audio_work scans):
+        prefer the tracks.json manifest at the work root (canonical order,
+        clean titles, per-track durations); fall back to a directory walk if
+        the manifest is missing.
+      - single file (scanner's `scan_mode='audio'` route): the row IS the
+        track — synthesize a one-entry list with its sidecar lyrics, if any.
+
+    Keeping both shapes behind one resolver lets /audio/{id}/track/{i} and
+    /audio/{id}/track/{i}/lyrics stay symmetric for the consumer
+    (AudioRepository.kt / MediaDetail.vue) without branching them."""
+    if os.path.isdir(media.absolute_path):
+        manifest = scanner.read_tracks_json(media.absolute_path)
+        if manifest and isinstance(manifest.get("tracks"), list):
+            # The work directory is the security boundary. Anything resolved
+            # from manifest entries must stay inside it — otherwise a tampered
+            # tracks.json could turn /audio/{id}/track/{i} into an arbitrary
+            # file reader (the streaming response doesn't care what it serves).
+            work_root_abs = os.path.realpath(media.absolute_path)
+            out: List[dict] = []
+            for entry in manifest["tracks"]:
+                if not isinstance(entry, dict):
+                    continue
+                rel = entry.get("rel") or ""
+                if not rel:
+                    continue
+                abs_path = os.path.realpath(os.path.join(media.absolute_path, *rel.split("/")))
+                # Path traversal guard: realpath() resolves "..", symlinks,
+                # double-separators etc. Reject anything that doesn't sit
+                # under work_root_abs (the +sep prevents the classic
+                # "/work_root_evil" sibling-prefix bypass).
+                if not (abs_path == work_root_abs or abs_path.startswith(work_root_abs + os.sep)):
+                    continue
+                if not os.path.exists(abs_path):
+                    continue
+                stem, _ = os.path.splitext(abs_path)
+                lyrics_abs = None
+                for lyric_ext in LYRIC_EXTS:
+                    candidate = stem + lyric_ext
+                    if os.path.exists(candidate):
+                        lyrics_abs = candidate
+                        break
+                out.append({
+                    "index": entry.get("index") if isinstance(entry.get("index"), int) else (len(out) + 1),
+                    "title": entry.get("title") or os.path.basename(abs_path),
+                    "rel": rel,
+                    "abs_path": abs_path,
+                    "lyrics_abs": lyrics_abs,
+                    "duration": entry.get("duration") if isinstance(entry.get("duration"), (int, float)) else None,
+                })
+            if out:
+                return out
+        # Manifest missing or empty / all entries unresolved — fall back.
+        return scan_audio_tracks(media.absolute_path)
+
+    parent = os.path.dirname(media.absolute_path)
+    stem = os.path.splitext(os.path.basename(media.absolute_path))[0]
+    lyrics_abs = None
+    for lyric_ext in LYRIC_EXTS:
+        candidate = os.path.join(parent, stem + lyric_ext)
+        if os.path.exists(candidate):
+            lyrics_abs = candidate
+            break
+    return [{
+        "index": 1,
+        "title": os.path.basename(media.absolute_path),
+        "rel": os.path.basename(media.absolute_path),
+        "abs_path": media.absolute_path,
+        "lyrics_abs": lyrics_abs,
+        "duration": None,
+    }]
+
+
+def _audio_lyrics_rel(track: dict, media: models.Media) -> Optional[str]:
+    """Resolve a track's lyrics path into a path relative to whichever anchor
+    makes sense (the work folder, or the parent dir for single-file audio)."""
+    if not track.get("lyrics_abs"):
+        return None
+    anchor = media.absolute_path if os.path.isdir(media.absolute_path) else os.path.dirname(media.absolute_path)
+    return os.path.relpath(track["lyrics_abs"], anchor).replace(os.sep, "/")
+
+
+@app.get("/audio/{media_id}/tracks")
+def get_audio_tracks(media_id: int, db: Session = Depends(get_db)):
+    media = _get_audio_media_or_404(media_id, db)
+    tracks = _resolve_audio_tracks(media)
+    return {
+        "tracks": [
+            {
+                "index": t["index"],
+                "title": t["title"],
+                "rel": t["rel"],
+                # Duration comes from tracks.json when present; otherwise null
+                # and the client probes it on load (HTML5 audio / ExoPlayer
+                # both tolerate null gracefully).
+                "duration": t.get("duration"),
+                # Client only checks isNotBlank(); the rel path doubles as a
+                # human-readable marker.
+                "lyrics": _audio_lyrics_rel(t, media),
+            }
+            for t in tracks
+        ],
+    }
+
+
+@app.get("/audio/{media_id}/track/{index}")
+def stream_audio_track(media_id: int, index: int, request: Request, db: Session = Depends(get_db)):
+    media = _get_audio_media_or_404(media_id, db)
+    tracks = _resolve_audio_tracks(media)
+    if index < 1 or index > len(tracks):
+        raise HTTPException(status_code=404, detail="Track index out of range")
+    return get_ranged_file_response(request, tracks[index - 1]["abs_path"])
+
+
+@app.get("/audio/{media_id}/track/{index}/lyrics")
+def get_audio_track_lyrics(media_id: int, index: int, db: Session = Depends(get_db)):
+    media = _get_audio_media_or_404(media_id, db)
+    tracks = _resolve_audio_tracks(media)
+    if index < 1 or index > len(tracks):
+        raise HTTPException(status_code=404, detail="Track index out of range")
+    lyrics_path = tracks[index - 1]["lyrics_abs"]
+    # Guaranteed 200 with empty `lines` when no sidecar exists.
+    return {"lines": parse_lyrics_file(lyrics_path) if lyrics_path else []}
 
 
 @app.get("/manga/{media_id}/pages")
@@ -2189,16 +2924,17 @@ def mobile_creator_detail(key: str, db: Session = Depends(get_db)):
 
 
 # ============================================================================
-# ASMR.one — mirror reachability probe (P1 scope from app/asmr_source.py)
+# ASMR.one — mirror probe, favorites sync, downloads
 # ============================================================================
-# Frontend: AsmrPanel.vue "探活" button. Builds candidate list (preferred base
-# first, then user-supplied mirrors, then known pool) and pings /api/ on each.
-# Pure network calls, no DB writes — safe to leave un-auth'd at this stage
-# but kept consistent with other /external/* endpoints (auth via interceptor).
-#
-# /external/asmr/sync and /external/asmr/downloads are intentionally NOT
-# implemented in this commit: they need source-row persistence, background
-# job orchestration, and credential storage — that's a separate design pass.
+# Frontend: AsmrPanel.vue. The three endpoints here form one user flow:
+#   1. /external/asmr/mirrors/ping  — find a reachable mirror
+#   2. /external/asmr/sync          — login + pull marked/playlist works into
+#                                     the ExternalFavoriteItem table
+#   3. /external/asmr/downloads     — fetch selected works to disk and
+#                                     register them as audio Media rows
+# Mirror probe is pure network (no DB writes); sync + downloads persist via
+# ExternalFavoriteSource rows with source_type='asmr', where source.cookie
+# holds the bearer token (raw password is never stored).
 
 @app.post("/external/asmr/mirrors/ping")
 def asmr_ping_mirrors(payload: dict = None):
@@ -2218,6 +2954,85 @@ def asmr_ping_mirrors(payload: dict = None):
             seen.add(b)
             ordered.append(b)
     return {"results": [asmr_source.ping_mirror(b) for b in ordered]}
+
+
+@app.post("/external/asmr/recheck-covers")
+def asmr_recheck_covers(db: Session = Depends(get_db)):
+    """Backfill cover thumbnails for audio Media rows downloaded before the
+    cover step existed in the pipeline.
+
+    For each audio work folder without a cover_path:
+      1. Look for an existing sidecar image (cover.jpg, etc.) — covers some
+         users will have copied in manually.
+      2. Fall back to the ExternalFavoriteItem.cover_url (paired by source_url),
+         download it next to the audio, then run the same scanner helpers as
+         the download pipeline does.
+
+    Idempotent: rows that already have cover_path are skipped. Returns counts
+    so the UI can show a "fixed N / M" toast."""
+    rows = db.query(models.Media).filter(
+        models.Media.media_type == "audio",
+        models.Media.cover_path.is_(None),
+    ).all()
+
+    checked = 0
+    fixed = 0
+    fetched_remote = 0
+    failed = 0
+
+    for media in rows:
+        if not media.absolute_path or not os.path.isdir(media.absolute_path):
+            continue
+        checked += 1
+        item_dir = media.absolute_path
+
+        cover_src = scanner.get_work_cover_path(item_dir)
+
+        if not cover_src and media.source_url:
+            # Reverse-link to the ExternalFavoriteItem so we know the remote
+            # cover URL. ASMR items are matched by their work page URL.
+            item = (
+                db.query(models.ExternalFavoriteItem)
+                .filter(
+                    models.ExternalFavoriteItem.url == media.source_url,
+                    models.ExternalFavoriteItem.source_type == "asmr",
+                )
+                .first()
+            )
+            cover_url = (item.cover_url or "").strip() if item else ""
+            if cover_url:
+                try:
+                    content, content_type = asmr_source.fetch_file(cover_url)
+                    ext = get_cover_extension(content_type, cover_url)
+                    cover_dst = os.path.join(item_dir, f"cover{ext}")
+                    with open(cover_dst, "wb") as cover_file:
+                        cover_file.write(content)
+                    cover_src = cover_dst
+                    fetched_remote += 1
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  ! recheck-covers: remote fetch failed for {media.title!r}: {exc}")
+                    failed += 1
+                    continue
+
+        if not cover_src:
+            continue
+
+        digest = hashlib.md5(item_dir.encode("utf-8")).hexdigest()[:12]
+        thumb_name = f"thumb_audio_{digest}_{int(datetime.now().timestamp())}.jpg"
+        thumb_path = os.path.join(THUMBNAIL_DIR, thumb_name)
+        if scanner.make_work_thumbnail(cover_src, thumb_path):
+            media.cover_path = thumb_name
+            fixed += 1
+        else:
+            failed += 1
+
+    db.commit()
+    return {
+        "checked": checked,
+        "fixed": fixed,
+        "fetched_remote": fetched_remote,
+        "failed": failed,
+    }
 
 
 @app.post("/external/asmr/sync", response_model=schemas.ExternalFavoriteSyncResponse)
@@ -2272,7 +3087,15 @@ def sync_asmr_favorites(payload: schemas.AsmrSyncRequest, db: Session = Depends(
         if not login_name:
             raise HTTPException(status_code=400, detail="登录需要用户名")
         try:
-            working_base, token = asmr_source.login(
+            # NB: login() returns (token, working_base) — token FIRST. An
+            # earlier version of this call swapped the tuple, which silently
+            # wrote the base URL into source.cookie (used as the bearer) and
+            # the JWT into source.favorites_url. The result was every
+            # subsequent /api/marks call sending `Authorization: Bearer
+            # https://api.asmr-200.com`, getting back 401 + "invalid token",
+            # and looping forever because the 401-handler kept clearing the
+            # cookie and forcing a fresh — but still mis-stored — login.
+            token, working_base = asmr_source.login(
                 preferred_base=api_base,
                 name=login_name,
                 password=payload.password,
@@ -2333,29 +3156,34 @@ def sync_asmr_favorites(payload: schemas.AsmrSyncRequest, db: Session = Depends(
         for db_item in existing_items.values():
             db_item.sync_position = None
 
-        deduped = {w.rj_code: w for w in parsed_works if w.rj_code}
+        # ParsedAsmrWork attribute names (see asmr_source.py): external_id,
+        # title, url, cover_url, category_name. The first cut of this code
+        # used `rj_code` / `work_url` / `circle` everywhere — names that don't
+        # exist on the dataclass — so the very first sync after login worked
+        # blew up with AttributeError. Keeping the canonical names below.
+        deduped = {w.external_id: w for w in parsed_works if w.external_id}
         for sync_position, work in enumerate(deduped.values()):
-            db_item = existing_items.get(work.rj_code)
+            db_item = existing_items.get(work.external_id)
             if not db_item:
                 db_item = models.ExternalFavoriteItem(
                     source=source,
                     source_type="asmr",
-                    external_id=work.rj_code,
-                    title=work.title or work.rj_code,
-                    url=work.work_url or "",
+                    external_id=work.external_id,
+                    title=work.title or work.external_id,
+                    url=work.url or "",
                     cover_url=work.cover_url,
                     # Reuse category_name for the circle (visible chip in UI);
                     # category_id stays NULL since asmr has no category system.
-                    category_name=work.circle or None,
+                    category_name=work.category_name or None,
                     sync_position=sync_position,
                     last_seen_at=now,
                 )
                 db.add(db_item)
             else:
                 db_item.title = work.title or db_item.title
-                db_item.url = work.work_url or db_item.url
+                db_item.url = work.url or db_item.url
                 db_item.cover_url = work.cover_url or db_item.cover_url
-                db_item.category_name = work.circle or db_item.category_name
+                db_item.category_name = work.category_name or db_item.category_name
                 db_item.sync_position = sync_position
                 db_item.last_seen_at = now
 
@@ -2388,10 +3216,70 @@ def sync_asmr_favorites(payload: schemas.AsmrSyncRequest, db: Session = Depends(
     except asmr_source.AsmrApiError as exc:
         source.status = "error"
         source.last_error = f"API 错误：{exc}"
+        # An expired/revoked bearer manifests as 401 + api_code='invalid token'.
+        # Drop the stale token so the next sync attempt forces a fresh login
+        # path instead of looping on the bad credential. The user has to enter
+        # their password again — we don't store it, so this is the right cycle.
+        if exc.status == 401:
+            source.cookie = None
         db.commit()
-        raise HTTPException(status_code=502, detail=f"同步 ASMR 收藏失败：{exc}")
+        # 401 is auth, surface as 401 so the front-end can render it distinctly
+        # from generic 502 network/parse errors.
+        http_status = 401 if exc.status == 401 else 502
+        raise HTTPException(status_code=http_status, detail=f"同步 ASMR 收藏失败：{exc}")
     except Exception as exc:
         source.status = "error"
         source.last_error = str(exc)
         db.commit()
         raise HTTPException(status_code=502, detail=f"同步 ASMR 收藏失败：{exc}")
+
+
+@app.post("/external/asmr/downloads", response_model=schemas.ExternalDownloadJob)
+def create_asmr_download_job(
+    payload: schemas.ExternalDownloadRequest,
+    background_tasks: BackgroundTasks,
+):
+    """ASMR sibling of /external/wnacg/downloads. Same request shape (item_ids
+    + download_root_path), same shared job dict (DOWNLOAD_JOBS), so the poll
+    + cancel endpoints (/external/downloads/{id}, .../cancel) work unchanged.
+    Format / SE-version filters are read off the source row that sync stored,
+    not from this payload — keeping the front-end's startDownload signature
+    aligned with WNACG."""
+    download_root_path = payload.download_root_path.strip()
+    if not download_root_path:
+        raise HTTPException(status_code=400, detail="请先设置下载位置")
+
+    job_id = str(uuid.uuid4())
+    DOWNLOAD_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "total": len(payload.item_ids),
+        "completed": 0,
+        "failed": 0,
+        "message": "准备下载",
+        "pages_total": 0,
+        "pages_done": 0,
+        "bytes_total": 0,
+        "downloaded_bytes": 0,
+        "bytes_total_known": False,
+        "unknown_size_files": 0,
+        "cancel_requested": False,
+        "current_book_title": "",
+        "current_book_total_pages": 0,
+        "current_book_downloaded_pages": 0,
+        "tasks": [
+            {
+                "id": str(item_id),
+                "item_id": item_id,
+                "title": "",
+                "status": "pending",
+                "total_pages": 0,
+                "downloaded_pages": 0,
+                "error": None,
+            }
+            for item_id in payload.item_ids
+        ],
+        "results": [],
+    }
+    background_tasks.add_task(run_asmr_download_job, job_id, payload.item_ids, download_root_path)
+    return DOWNLOAD_JOBS[job_id]

@@ -6,9 +6,13 @@ call tries the user-configured base first and then falls back across the known
 mirrors. Auth is a bearer token obtained from username/password (the user's own
 account — required so we can read *their* marked/favourited works).
 
-P1 scope: login + list marked works. The per-work track tree
-(`fetch_work_tracks`) needed for P2 downloads is stubbed here with the endpoint
-shape documented so P2 can fill it in without re-deriving the API.
+Scope:
+  - P1 (live): login, list marked works, list playlist works, mirror ping.
+  - P2 (live): per-work track tree (`fetch_work_tracks`), flatten / SE-version
+    / format filtering, subtitle collection, plan assembly
+    (`prepare_asmr_download_plan`), and CDN file streaming (`open_file_stream`).
+    Disk persistence and Media DB upsert live in main.py — this module stays
+    I/O-light so it can be unit tested without filesystem mocks.
 """
 
 from dataclasses import dataclass, field
@@ -47,6 +51,14 @@ _API_ERROR_HINTS = {
     "playlist.playlistNotFound": (
         "登录的账号读不到这个播放列表——它对外不可见，"
         "必须用列表归属的本人 asmr.one 账号登录"
+    ),
+    # asmr.one returns 401 + {"error": "invalid token"} when the bearer we
+    # stored has expired or been revoked. The fix is to re-login, which means
+    # the user has to fill the password field again — the original password
+    # itself isn't kept.
+    "invalid token": (
+        "asmr.one 登录已过期或被服务端撤销，请重新填写密码再点同步"
+        "（密码只用来换取新 token，不会被保存）"
     ),
 }
 
@@ -533,6 +545,26 @@ def filter_audio_versions(tracks: List[AsmrTrack], mode: Optional[str]) -> List[
     return kept or tracks
 
 
+# Folders that contain auxiliary text ("台本" = script, "翻译/翻訳" =
+# translation, "脚本" = screenplay) instead of the main listening content.
+# These often live as a top-level sibling of the actual audio folders
+# (e.g. RJ01495967 ships "大家一起来翻译_台本" as tree[0]). Drop any track
+# / subtitle whose rel_dir has one of these tokens in any segment so they
+# never make it into the download plan.
+_SCRIPT_FOLDER_RE = re.compile(
+    r"台本|脚本|劇本|剧本|翻訳|翻译|翻譯|文字稿|"
+    r"script|translation|translate",
+    re.IGNORECASE,
+)
+
+
+def _rel_dir_is_script(rel_dir: str) -> bool:
+    for seg in (rel_dir or "").split("/"):
+        if _SCRIPT_FOLDER_RE.search(seg):
+            return True
+    return False
+
+
 SUBTITLE_EXTS = ("lrc", "vtt", "srt")
 
 
@@ -605,6 +637,102 @@ def fetch_file(url: str, timeout: int = 90, retries: int = 3, backoff: float = 1
     if last_exc:
         raise last_exc
     raise RuntimeError("unreachable retry state")
+
+
+def open_file_stream(url: str, timeout: int = 90):
+    """Streaming counterpart to fetch_file(): returns the open urllib response
+    so the caller can read chunks straight to disk. ASMR works ship single
+    files in the hundreds of MB (and WAV variants > 1 GB), so loading the
+    whole body into RAM like fetch_file() does isn't safe — use this for
+    track / subtitle downloads. The CDN URLs are pre-authorised, so no bearer
+    token is sent (passing one can break a signed URL).
+
+    Caller is responsible for closing the response (use `with` / try-finally)
+    and for translating transport errors. No retries here: a partial write to
+    disk has to be cleaned up by the caller anyway."""
+    headers = {
+        "User-Agent": "HE-Manager/1.0 local ASMR sync",
+        "Accept": "*/*",
+        "Referer": WEB_WORK_BASE + "/",
+    }
+    return urlopen(Request(url, headers=headers), timeout=timeout)
+
+
+@dataclass
+class AsmrPlannedFile:
+    """One file to download for a single ASMR work. Paths are kept as
+    POSIX-style segment lists (NOT joined) so main.py can build the local
+    path with the host OS separator without this module touching `os`."""
+    download_url: str
+    rel_segments: List[str]  # nested folder + filename, e.g. ["■03_本篇", "01.mp3"]
+    kind: str                # "audio" | "subtitle"
+    size: Optional[int] = None
+    duration: Optional[float] = None
+
+
+def prepare_asmr_download_plan(
+    tree,
+    audio_format: str = "all",
+    audio_version: str = "all",
+    include_subtitles: bool = True,
+) -> List[AsmrPlannedFile]:
+    """Assemble the full per-work download list from a /api/tracks tree.
+
+    Filter chain (order matters):
+      1. drop script/translation folders ("大家一起来翻译_台本", ...) — these
+         are auxiliary, never what the user clicks "download" for.
+      2. format filter (drop WAV / keep only MP3).
+      3. SE-version filter (drop or keep the SE variant folder).
+      4. subtitles are constrained to the same rel_dirs as the surviving
+         audio. The default collector walks the whole tree and would
+         otherwise pull lrcs from 试听版 / wav_有SE / mp3_无SE / etc. that
+         the user explicitly filtered out. Pairing-by-folder is the conservative
+         call: occasionally a circle ships lyrics in a separate "歌词" folder
+         and we'll miss those, but downloading sub files the user filtered
+         away is the worse failure mode.
+    """
+    audio = flatten_tracks(tree, kinds=("audio",))
+    audio = [t for t in audio if not _rel_dir_is_script(t.rel_dir)]
+    audio = filter_audio_tracks(audio, audio_format)
+    audio = filter_audio_versions(audio, audio_version)
+
+    # Sanitise BOTH folder names and filenames: a malicious/proxied API
+    # response could ship a folder title like "../../evil" and turn the
+    # download pipeline into a directory-traversal write. _safe_segment
+    # strips path separators + ".."-only segments. Applied to every layer.
+    def _safe_path(rel_dir: str, title: str) -> List[str]:
+        segs = [_safe_segment(seg) for seg in (rel_dir or "").split("/") if seg]
+        segs.append(_safe_segment(title))
+        return segs
+
+    plan: List[AsmrPlannedFile] = []
+    for track in audio:
+        plan.append(
+            AsmrPlannedFile(
+                download_url=track.download_url,
+                rel_segments=_safe_path(track.rel_dir, track.title),
+                kind="audio",
+                size=track.size,
+                duration=track.duration,
+            )
+        )
+
+    if include_subtitles:
+        audio_rel_dirs = {track.rel_dir for track in audio}
+        for sub in collect_subtitle_nodes(tree):
+            if sub.rel_dir not in audio_rel_dirs:
+                continue
+            if _rel_dir_is_script(sub.rel_dir):
+                continue
+            plan.append(
+                AsmrPlannedFile(
+                    download_url=sub.download_url,
+                    rel_segments=_safe_path(sub.rel_dir, sub.title),
+                    kind="subtitle",
+                )
+            )
+
+    return plan
 
 
 def ping_mirror(base: str, timeout: int = 6) -> dict:

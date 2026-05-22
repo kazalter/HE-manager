@@ -182,6 +182,15 @@ class ExternalFavoriteSourceUpdate(BaseModel):
     name: Optional[str] = None
     favorites_url: Optional[str] = None
     download_root_path: Optional[str] = None
+    # ASMR-specific knobs the front-end auto-saves from AsmrPanel. Anything
+    # not declared here gets silently dropped by pydantic — that's how the
+    # format / SE-version filters were quietly ignored for a long time even
+    # though the download pipeline read them from the source row. Use `""` or
+    # `None` to clear; the route normalises before writing.
+    audio_format_filter: Optional[str] = None
+    audio_version_filter: Optional[str] = None
+    playlist_url: Optional[str] = None
+    api_mirrors: Optional[str] = None
 
 
 class ExternalDownloadRequest(BaseModel):

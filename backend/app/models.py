@@ -17,7 +17,12 @@ class Folder(Base):
     id = Column(Integer, primary_key=True, index=True)
     path = Column(String, unique=True, index=True)
     status = Column(String, default="idle")  # idle, scanning, error
-    scan_mode = Column(String, default="auto")  # auto, manga, video, image
+    # auto / manga / video / image
+    # / audio       — single-file audio (one Media per .mp3/.wav/etc., scanner walks tree)
+    # / audio_work  — folder-of-audio (one Media per work folder; identified by
+    #                 tracks.json / source.txt / direct audio files. ASMR
+    #                 downloads also use this mode.)
+    scan_mode = Column(String, default="auto")
     thumbnail_enabled = Column(Boolean, default=True)
     thumbnail_interval = Column(Integer, default=1)
     last_scanned_at = Column(DateTime, nullable=True)
@@ -32,7 +37,7 @@ class Media(Base):
     title = Column(String, index=True)
     relative_path = Column(String)
     absolute_path = Column(String, unique=True)
-    media_type = Column(String, index=True)  # 'video', 'manga', or 'image'
+    media_type = Column(String, index=True)  # 'video', 'manga', 'image', or 'audio'
     extension = Column(String)
     file_size = Column(Integer)
     cover_path = Column(String, nullable=True)  # Path to the generated thumbnail
