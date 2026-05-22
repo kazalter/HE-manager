@@ -1,28 +1,81 @@
-# Frontend
+# ============================================================================
+# .gitignore — HE Manager
+# ----------------------------------------------------------------------------
+# Repo only tracks source code, config, docs, and committed UI/assets.
+# Everything else (build artifacts, derived caches, user-generated media,
+# scratch/backup files, IDE state) is excluded. Run
+#     git rm -r --cached <path>
+# to drop something already tracked without deleting it on disk.
+# ============================================================================
+
+# --- Frontend ----------------------------------------------------------------
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
 frontend/.env.development.local
 frontend/.env.test.local
 frontend/.env.production.local
+frontend/.vite/
 
-# Backend
+# --- Backend Python toolchain -----------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
 backend/__pycache__/
-backend/*.pyc
+backend/app/__pycache__/
 backend/venv/
 backend/.env
 backend/instance/
 backend/.pytest_cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Database/Storage
+# --- Database & SQLite scratch ----------------------------------------------
 *.db
 *.sqlite
 *.db-wal
 *.db-shm
+*.db.broken
+*.db.corrupt-*
 backend/storage/
 backend/backups/
 frontend/public/covers/
+
+# --- Backend user-generated data --------------------------------------------
+# Thumbnails / dedup caches / uploads — derived from the DB and regenerable
+# by the scanner. Keeping ~100 MB of binary blobs in git bloats every clone
+# and makes git status noisy.
+backend/.thumbnails/
+backend/.dedup/
+backend/data/
+backend/uploads/
+backend/.lostfound/
+backend/_scratch/
+
+# --- Logs --------------------------------------------------------------------
+logs/
+*.log
+
+# --- Android build artifacts ------------------------------------------------
+# Every gradle build mutates these. Before this .gitignore they were tracked
+# and showed up as ~1500 modified files on every git status. Source of truth
+# is android-app/app/src and android-app/app/build.gradle.
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/.idea/
+android-app/local.properties
+
+# --- IDE / editor state -----------------------------------------------------
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# --- OS scratch -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
