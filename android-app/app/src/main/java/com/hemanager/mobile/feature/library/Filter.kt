@@ -510,7 +510,7 @@ internal fun QuickFilterRowV2(
                 onStatusSelected("")
             }
         )
-        listOf("video" to "视频", "manga" to "漫画", "image" to "图片").forEach { (value, label) ->
+        listOf("video" to "视频", "manga" to "漫画", "image" to "图片", "audio" to "音频").forEach { (value, label) ->
             QuickFilterChipV2(
                 label = label,
                 selected = mediaValue == value,

@@ -280,6 +280,7 @@ internal fun mediaTypeLabelV2(type: String?): String {
         "video" -> "视频"
         "manga" -> "漫画"
         "image" -> "图片"
+        "audio" -> "音频"
         else -> "媒体"
     }
 }
@@ -448,6 +449,7 @@ internal fun filterAccent(value: String): Color {
         "video" -> MaterialTheme.colorScheme.secondary
         "manga" -> MaterialTheme.colorScheme.tertiary
         "image" -> Color(0xFFFF8FA3)
+        "audio" -> Color(0xFF67E8F9)
         else -> MaterialTheme.colorScheme.primary
     }
 }
@@ -458,6 +460,7 @@ internal fun typeAccent(type: String?): Color {
         "video" -> MaterialTheme.colorScheme.secondary
         "manga" -> MaterialTheme.colorScheme.tertiary
         "image" -> Color(0xFFFF8FA3)
+        "audio" -> Color(0xFF67E8F9)
         else -> MaterialTheme.colorScheme.primary
     }
 }
@@ -486,6 +489,7 @@ internal fun typeLabel(type: String?): String {
         "video" -> "视频"
         "manga" -> "漫画"
         "image" -> "图片"
+        "audio" -> "音频"
         else -> "媒体"
     }
 }

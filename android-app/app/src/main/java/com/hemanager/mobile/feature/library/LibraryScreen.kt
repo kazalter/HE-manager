@@ -312,7 +312,8 @@ internal fun LibraryScreenV2(
             FilterOption("全部", ""),
             FilterOption("视频", "video"),
             FilterOption("漫画", "manga"),
-            FilterOption("图片", "image")
+            FilterOption("图片", "image"),
+            FilterOption("音频", "audio")
         )
     }
     val statusFilters = remember {

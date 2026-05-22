@@ -1,5 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ASMR audio player: MediaSessionService needs to stay alive with the
+         screen off / app backgrounded, and post a media-style notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -13,6 +18,25 @@
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
             android:launchMode="singleTask" />
+        <!-- ASMR audio player host. singleTask avoids stacking duplicates when
+             the user re-opens a work while one is already playing. Lifecycle
+             config matches what the Compose UI tolerates without recreate. -->
+        <activity
+            android:name=".audio.AudioPlayerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:launchMode="singleTask" />
+        <!-- Media3 MediaSessionService. exported=true + the action filter is
+             required for the system MediaController binding (lock-screen +
+             Bluetooth + headset controls). foregroundServiceType matches the
+             FOREGROUND_SERVICE_MEDIA_PLAYBACK permission above (Android 14+). -->
+        <service
+            android:name=".audio.AsmrPlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true"

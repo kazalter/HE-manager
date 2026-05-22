@@ -26,6 +26,10 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     # If two writers do collide, wait up to 5s instead of failing immediately.
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    # WAL 自动 checkpoint 阈值：默认 1000 页（≈4MB）才合并回主库。我们调到 200
+    # 页（≈800KB），缩短「WAL 里有未合并写入」的风险窗口——异常退出时丢失/损
+    # 坏的可能数据量小一个数量级。代价是更频繁的小批量 I/O，对 SSD 微不足道。
+    cursor.execute("PRAGMA wal_autocheckpoint=200")
     cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

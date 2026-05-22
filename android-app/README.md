@@ -19,10 +19,10 @@ The current Codex environment does not have Java, Gradle, or Android SDK install
 
 ## Server
 
-Start the backend service on the PC:
+Start the backend service on the PC (backend only, no frontend):
 
-```bat
-run_server.bat
+```powershell
+.\he-server.ps1
 ```
 
 Find the PC LAN IP, then enter it in the app as:
