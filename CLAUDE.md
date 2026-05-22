@@ -3,6 +3,26 @@
 个人自用媒体库（视频/漫画/图片/ASMR音频）。后端 FastAPI + 前端 Vue + 安卓原生 App。
 本文件是常驻索引，避免每次重进逐个翻文件。路线图见 `FEATURE_PLANS.md`。
 
+## ⚠️ 硬规则 — 防数据/代码丢失（任何 Claude 接手都必须遵守）
+
+**触发条件**：要执行 `git reset --hard` / `git checkout -- <path>` / `git checkout <branch>`
+（在脏工作区切分支）/ `git stash drop` / `git clean -fd*` / `git branch -D`（删未合并分支）
+/ `git worktree remove --force` 之前。
+
+**强制流程**（不能跳）：
+1. **先跑 `git status`**——不要凭"我以为工作区干净"做判断，永远显式确认一次。
+2. **如有任何工作区改动**（含 modified tracked + untracked source）：
+   - 修改类（`M`）→ 先 `git commit`（即便起名 `WIP: ...` 也行，重点是入仓）。
+   - 未追踪源码（`??` 含 .py / .vue / .ts / .kt / .java / .md / .ps1 等）→ 评估应 commit 还是
+     应 ignore，逐个分类处理。**不允许"它好像没用就放着"**——已经被覆盖一次了。
+3. 如果用户压时间不想 commit，至少 `git stash push -u -m "preflight"`，记下 stash 编号。
+4. **完成 commit / stash 之后才能跑那条破坏性命令。**
+
+**反面教材**（这条规则的由来）：上一次会话上下文压缩之后，Claude 不知道工作区有 910 行
+未提交的 ASMR/audio 后端代码，直接 `git reset --hard` 把 main 切到 integration 分支，
+导致用户的真实功能"看似消失"——花了大半天追查才发现是 reset 偷偷覆盖了 tracked 文件。
+完整复盘见本会话历史（5/21-5/22）。
+
 ## 跑 / 构建 / 测试
 
 - **Web 栈启动**：两个脚本，逻辑都在 `he.ps1`。
