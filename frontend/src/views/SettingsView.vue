@@ -16,10 +16,12 @@ const showAddModal = ref(false)
 const selectedTheme = ref<string>(getStoredTheme())
 
 const modes: Array<{ id: Folder['scan_mode']; label: string; description: string }> = [
-  { id: 'auto', label: '自动', description: '自动识别视频、漫画压缩包和单张图片' },
+  { id: 'auto', label: '自动', description: '自动识别视频、漫画压缩包、单张图片、单文件音频' },
   { id: 'video', label: '视频', description: '只递归扫描视频文件' },
   { id: 'image', label: '杂图', description: '只递归扫描单张图片' },
   { id: 'manga', label: '漫画', description: '把包含图片的文件夹识别为一本漫画' },
+  { id: 'audio', label: '音频（单文件）', description: '每个 .mp3/.wav/.flac 单独入库（散装音乐收藏）' },
+  { id: 'audio_work', label: '音频作品', description: '把每个文件夹识别为一个音频作品（ASMR 等，含 tracks.json 时优先读取）' },
 ]
 
 const selectTheme = (themeId: string) => {

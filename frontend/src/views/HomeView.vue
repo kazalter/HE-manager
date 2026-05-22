@@ -29,6 +29,7 @@ const pageTitle = computed(() => {
   if (props.mediaType === 'video') return '所有视频'
   if (props.mediaType === 'manga') return '所有漫画'
   if (props.mediaType === 'image') return '所有杂图'
+  if (props.mediaType === 'audio') return '所有音频'
   if (favoriteOnly.value) return '我的收藏'
   return '全部媒体'
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Book, Eye, Film, Image as ImageIcon, Play, Star } from 'lucide-vue-next'
+import { Book, Eye, Film, Headphones, Image as ImageIcon, Play, Star } from 'lucide-vue-next'
 import { THUMBNAIL_URL } from '../config'
 import type { Media } from '../types'
 
@@ -63,6 +63,7 @@ const formatMeta = (media: Media) => {
 const typeLabel = (type: Media['media_type']) => {
   if (type === 'video') return '视频'
   if (type === 'manga') return '漫画'
+  if (type === 'audio') return '音频'
   return '杂图'
 }
 </script>
@@ -81,6 +82,7 @@ const typeLabel = (type: Media['media_type']) => {
         <div class="opacity-0 group-hover:opacity-100 w-12 h-12 rounded-full bg-black/45 backdrop-blur-md border border-white/20 flex items-center justify-center scale-90 group-hover:scale-100 transition-all duration-300">
           <Play v-if="media.media_type === 'video'" :size="24" fill="white" class="ml-1 text-white" />
           <Book v-else-if="media.media_type === 'manga'" :size="22" class="text-white" />
+          <Headphones v-else-if="media.media_type === 'audio'" :size="22" class="text-white" />
           <ImageIcon v-else :size="22" class="text-white" />
         </div>
       </div>
@@ -88,6 +90,7 @@ const typeLabel = (type: Media['media_type']) => {
       <div class="absolute top-2 right-2 px-2 py-1 rounded-lg bg-black/65 backdrop-blur-md border border-white/10 flex items-center gap-1.5 z-20">
         <Film v-if="media.media_type === 'video'" :size="12" class="text-accent" />
         <Book v-else-if="media.media_type === 'manga'" :size="12" class="text-purple-300" />
+        <Headphones v-else-if="media.media_type === 'audio'" :size="12" class="text-cyan-300" />
         <ImageIcon v-else :size="12" class="text-green-300" />
         <span class="text-[10px] font-bold text-white/90">{{ typeLabel(media.media_type) }}</span>
       </div>

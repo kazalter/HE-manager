@@ -74,6 +74,55 @@ const coverUrl = computed(() => currentMedia.value.cover_path ? `${THUMBNAIL_URL
 const isImage = computed(() => currentMedia.value.media_type === 'image')
 const isManga = computed(() => currentMedia.value.media_type === 'manga')
 const isVideo = computed(() => currentMedia.value.media_type === 'video')
+const isAudio = computed(() => currentMedia.value.media_type === 'audio')
+
+// --- Audio (ASMR) state ---
+// Web has no full mainstream player like the Android side; we render a basic
+// HTML5 <audio> + tap-to-switch track list, enough to verify downloads and
+// listen casually. Lyrics and sleep timer live only on Android for now.
+interface AudioTrack { index: number; title: string; rel: string; duration: number | null; lyrics: string | null }
+const audioTracks = ref<AudioTrack[]>([])
+const audioCurrentIndex = ref(1)
+const audioLoading = ref(false)
+const audioError = ref('')
+const audioElRef = ref<HTMLAudioElement | null>(null)
+const audioTrackStreamUrl = computed(() =>
+  `${API_BASE_URL}/audio/${currentMedia.value.id}/track/${audioCurrentIndex.value}`,
+)
+
+const fetchAudioTracks = async () => {
+  if (!isAudio.value) return
+  audioLoading.value = true
+  audioError.value = ''
+  try {
+    const res = await axios.get(`${API_BASE_URL}/audio/${currentMedia.value.id}/tracks`)
+    audioTracks.value = res.data?.tracks || []
+    audioCurrentIndex.value = audioTracks.value[0]?.index ?? 1
+  } catch (err: any) {
+    audioError.value = err.response?.data?.detail || '读取音轨失败'
+    audioTracks.value = []
+  } finally {
+    audioLoading.value = false
+  }
+}
+
+const playAudioTrack = (index: number) => {
+  audioCurrentIndex.value = index
+  // Source change requires a load() + play() round-trip on most browsers.
+  nextTick(() => {
+    const el = audioElRef.value
+    if (el) {
+      el.load()
+      el.play().catch(() => { /* user gesture might be required; ignore */ })
+    }
+  })
+}
+
+const onAudioEnded = () => {
+  const idx = audioTracks.value.findIndex(t => t.index === audioCurrentIndex.value)
+  const next = audioTracks.value[idx + 1]
+  if (next) playAudioTrack(next.index)
+}
 const clickOnlyViewerControls = computed(() => isFullscreen.value && (isManga.value || isImage.value))
 const currentIndex = computed(() => props.allMedia.findIndex(m => m.id === currentMedia.value.id))
 const videoProgressPercent = computed(() => {
@@ -151,6 +200,8 @@ const formatDuration = (seconds: number | null) => {
 const mediaTypeLabel = computed(() => {
   if (currentMedia.value.media_type === 'video') return '视频'
   if (currentMedia.value.media_type === 'manga') return '漫画'
+  if (currentMedia.value.media_type === 'audio') return '音频'
+  if (currentMedia.value.media_type === 'image') return '杂图'
   return '图片'
 })
 
@@ -183,7 +234,7 @@ const setRating = async (score: number) => {
     Object.assign(currentMedia.value, previousMedia)
     emit('updated', previousMedia)
     console.error('Failed to update rating:', err)
-    alert('评分保存失败。后端当前没有响应新版更新接口，请重新运行 run_app.bat。')
+    alert('评分保存失败。后端当前没有响应新版更新接口，请重新运行 he.ps1。')
   }
 }
 
@@ -524,6 +575,13 @@ watch(
     } else {
       stopArtplayer()
     }
+
+    if (newVal.media_type === 'audio') {
+      await fetchAudioTracks()
+    } else {
+      audioTracks.value = []
+      audioCurrentIndex.value = 1
+    }
   },
   { immediate: true },
 )
@@ -661,6 +719,59 @@ onUnmounted(() => {
 
           <div v-else-if="isVideo" class="relative flex-1 min-h-0 bg-black">
             <div ref="artRef" class="media-detail-player w-full h-full outline-none"></div>
+          </div>
+
+          <div v-else-if="isAudio" class="relative flex-1 min-h-0 bg-black overflow-hidden flex flex-col">
+            <!-- Audio header: cover + meta + transport. Plain HTML5 audio is
+                 enough for casual web listening; the Android app handles the
+                 background playback, lyric sync, sleep timer, etc. -->
+            <div class="flex items-center gap-5 px-6 py-5 border-b border-white/10 bg-gradient-to-b from-black/40 to-transparent">
+              <div class="w-24 h-24 rounded-2xl bg-white/5 border border-white/10 overflow-hidden shrink-0 flex items-center justify-center">
+                <img v-if="coverUrl" :src="coverUrl" class="w-full h-full object-cover" :alt="currentMedia.title" />
+                <span v-else class="text-white/30 text-xs">无封面</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <h3 class="text-xl font-black text-white truncate">{{ currentMedia.title }}</h3>
+                <p class="text-xs text-white/45 mt-1 truncate">{{ currentMedia.relative_path }}</p>
+                <p class="text-[11px] text-white/35 mt-1">Web 端为基础播放；歌词跟随、循环、休眠定时器请用 Android App</p>
+              </div>
+            </div>
+
+            <div class="px-6 py-4 border-b border-white/10 bg-black/30">
+              <div v-if="audioLoading" class="text-sm text-white/55">正在加载音轨…</div>
+              <div v-else-if="audioError" class="text-sm text-red-300">{{ audioError }}</div>
+              <div v-else-if="audioTracks.length === 0" class="text-sm text-white/45">没有可播放的音轨</div>
+              <div v-else class="space-y-3">
+                <p class="text-[11px] font-bold text-white/55 uppercase tracking-widest">
+                  正在播放 · 第 {{ audioCurrentIndex }} / {{ audioTracks.length }} 轨
+                </p>
+                <audio
+                  ref="audioElRef"
+                  :src="audioTrackStreamUrl"
+                  controls
+                  preload="metadata"
+                  class="w-full"
+                  @ended="onAudioEnded"
+                />
+              </div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-2 py-2">
+              <button
+                v-for="track in audioTracks"
+                :key="track.index"
+                type="button"
+                @click="playAudioTrack(track.index)"
+                :class="track.index === audioCurrentIndex
+                  ? 'bg-accent/15 border-accent/40 text-white'
+                  : 'border-white/5 text-white/70 hover:text-white hover:bg-white/[0.04]'"
+                class="w-full text-left rounded-xl border px-4 py-3 mb-1.5 transition-all flex items-center gap-3"
+              >
+                <span class="text-xs font-mono w-7 shrink-0 text-white/55">{{ track.index.toString().padStart(2, '0') }}</span>
+                <span class="flex-1 min-w-0 truncate text-sm font-bold">{{ track.title }}</span>
+                <span v-if="track.lyrics" class="text-[10px] font-black text-accent/85 uppercase tracking-widest shrink-0">LRC</span>
+              </button>
+            </div>
           </div>
 
           <div v-else class="flex-1 min-h-0 flex flex-col items-center bg-black overflow-hidden relative group" @wheel="handleMangaWheel" @click="handleViewerClick" @dblclick="handleViewerDoubleClick">

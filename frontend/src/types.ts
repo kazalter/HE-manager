@@ -88,7 +88,7 @@ export interface Folder {
     id: number;
     path: string;
     status: 'idle' | 'scanning' | 'error';
-    scan_mode: 'auto' | 'manga' | 'video' | 'image';
+    scan_mode: 'auto' | 'manga' | 'video' | 'image' | 'audio' | 'audio_work';
     thumbnail_enabled: boolean;
     thumbnail_interval: number;
     last_scanned_at: string | null;

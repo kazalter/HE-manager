@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { BarChart3, Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Home, Image as ImageIcon, LogOut, Palette, Settings as SettingsIcon, Star, Users, RefreshCw } from 'lucide-vue-next'
+import { BarChart3, Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Headphones, Home, Image as ImageIcon, LogOut, Palette, Settings as SettingsIcon, Star, Users, RefreshCw } from 'lucide-vue-next'
 import type { User } from '../types'
 
 const props = defineProps<{
@@ -84,6 +84,11 @@ const toggle = () => {
       <router-link to="/type/image" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="杂图">
         <ImageIcon :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">杂图</span>
+      </router-link>
+
+      <router-link to="/type/audio" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="音频">
+        <Headphones :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
+        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">音频</span>
       </router-link>
 
       <router-link :to="{ path: '/', query: { favorite: 'true' } }" :class="[baseLinkClass, isFavoriteActive ? activeLinkClass : '']" title="收藏">
