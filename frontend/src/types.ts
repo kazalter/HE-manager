@@ -79,6 +79,72 @@ export interface Tag {
     count: number;
 }
 
+export interface MangaRecommendationItem {
+    media: Media;
+    reason: string;
+    matched_tags: string[];
+    score: number;
+}
+
+export interface MangaRecommendationResponse {
+    recommendations: MangaRecommendationItem[];
+    parsed_preferences: Record<string, unknown>;
+    ai_enabled: boolean;
+    candidate_count: number;
+    message: string | null;
+}
+
+export interface AiRecommendationStatus {
+    deepseek_configured: boolean;
+    model: string;
+    base_url: string;
+    key_saved: boolean;
+    env_key_present: boolean;
+}
+
+export interface DeepSeekConfigUpdate {
+    api_key?: string | null;
+    model?: string | null;
+    base_url?: string | null;
+    clear_api_key?: boolean;
+}
+
+export interface MangaProfileStats {
+    total_manga: number;
+    profiled: number;
+    stale: number;
+    missing: number;
+}
+
+export interface MangaProfileJob {
+    job_id: string;
+    status: string;
+    total: number;
+    completed: number;
+    failed: number;
+    message: string;
+    current_title: string;
+    errors: string[];
+}
+
+export interface MangaMetadataStats {
+    total_manga: number;
+    profiled: number;
+    stale: number;
+    missing: number;
+}
+
+export interface MangaMetadataJob {
+    job_id: string;
+    status: string;
+    total: number;
+    completed: number;
+    failed: number;
+    message: string;
+    current_title: string;
+    errors: string[];
+}
+
 export interface User {
     id: number;
     username: string;

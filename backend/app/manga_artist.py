@@ -46,38 +46,47 @@ _LEADING_BRACKET = re.compile(r"^\s*[［\[]([^［\]\[］]+)[］\]]\s*")
 _CIRCLE_ARTIST = re.compile(r"^(?P<circle>.+?)\s*[（(](?P<artist>[^（）()]+)[）)]\s*$")
 
 
-def parse_artist(title: Optional[str]) -> Optional[str]:
-    """Return the canonical artist name for a manga title, or None."""
+def _author_bracket(title: Optional[str]) -> Optional[str]:
+    """Return the contents of the first non-meta `[...]` bracket, or None."""
     if not title:
         return None
     s = title.strip()
-
-    # 1. Drop leading "(event)" groups: (C105), (COMIC1☆15), (例大祭) ...
     while True:
         stripped = _EVENT_PREFIX.sub("", s)
         if stripped == s:
             break
         s = stripped
-
-    # 2. Skip leading meta-tag brackets ([無修正], [中国翻訳], …), then take the
-    #    first remaining bracket as the author/circle bracket.
-    inner: Optional[str] = None
     while True:
         m = _LEADING_BRACKET.match(s)
         if not m:
-            break
+            return None
         content = m.group(1).strip()
         if content.lower() in _META_TAGS or _DATE_BRACKET.match(content):
             s = s[m.end():]
             continue
-        inner = content
-        break
+        return content
 
+
+def parse_artist(title: Optional[str]) -> Optional[str]:
+    """Return the canonical artist name for a manga title, or None."""
+    inner = _author_bracket(title)
     if not inner:
         return None
-
-    # 3. "Circle (Artist)" -> parenthesised artist is canonical; otherwise the
-    #    bracket content itself is the artist.
     cm = _CIRCLE_ARTIST.match(inner)
     name = (cm.group("artist") if cm else inner).strip()
     return name or None
+
+
+def parse_circle(title: Optional[str]) -> Optional[str]:
+    """Return the circle (社团) for a `[Circle (Artist)]` title, or None.
+
+    A bare `[Artist]` bracket has no circle — we return None rather than
+    fabricating one from the artist.
+    """
+    inner = _author_bracket(title)
+    if not inner:
+        return None
+    cm = _CIRCLE_ARTIST.match(inner)
+    if not cm:
+        return None
+    return (cm.group("circle") or "").strip() or None

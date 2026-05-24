@@ -79,6 +79,18 @@ class Media(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    ai_profile = relationship(
+        "MangaAIProfile",
+        back_populates="media",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    metadata_profile = relationship(
+        "MangaMetadataProfile",
+        back_populates="media",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 class Tag(Base):
     __tablename__ = "tags"
@@ -87,6 +99,50 @@ class Tag(Base):
     name = Column(String, unique=True, index=True)
 
     media_items = relationship("Media", secondary=media_tags, back_populates="tags")
+
+
+class MangaAIProfile(Base):
+    __tablename__ = "manga_ai_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    media_id = Column(Integer, ForeignKey("media.id"), unique=True, index=True)
+    content_summary = Column(Text, nullable=True)
+    style_tags = Column(Text, nullable=True)
+    story_tags = Column(Text, nullable=True)
+    tone_tags = Column(Text, nullable=True)
+    recommendation_keywords = Column(Text, nullable=True)
+    sampled_pages = Column(Text, nullable=True)
+    ocr_text = Column(Text, nullable=True)
+    visual_features = Column(Text, nullable=True)
+    analyzer_version = Column(String, default="v1")
+    source_mtime = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    media = relationship("Media", back_populates="ai_profile")
+
+
+class MangaMetadataProfile(Base):
+    __tablename__ = "manga_metadata_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    media_id = Column(Integer, ForeignKey("media.id"), unique=True, index=True)
+    normalized_title = Column(String, index=True, nullable=True)
+    parsed_title = Column(String, nullable=True)
+    parsed_artist = Column(String, nullable=True)
+    parsed_circle = Column(String, nullable=True)
+    parody = Column(String, nullable=True)
+    language = Column(String, nullable=True)
+    external_tags = Column(Text, nullable=True)
+    external_summary = Column(Text, nullable=True)
+    source_matches = Column(Text, nullable=True)
+    confidence = Column(Integer, default=0)
+    analyzer_version = Column(String, default="metadata-v1")
+    source_signature = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    media = relationship("Media", back_populates="metadata_profile")
 
 
 class User(Base):

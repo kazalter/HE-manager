@@ -21,11 +21,15 @@ from sqlalchemy.orm import Session
 from . import (
     asmr_source,
     auth,
+    ai_config,
     creators as creators_mod,
     database,
     external_sources,
     media_cleanup,
+    manga_metadata,
+    manga_profiles,
     models,
+    recommendations,
     schemas,
     scanner,
     stats as stats_mod,
@@ -395,6 +399,8 @@ DEFAULT_EXTERNAL_DOWNLOAD_DIR = os.path.join(os.getcwd(), "external_downloads")
 EXTERNAL_COVERS_DIR = os.path.abspath(os.path.join(os.getcwd(), "..", "covers"))
 os.makedirs(EXTERNAL_COVERS_DIR, exist_ok=True)
 DOWNLOAD_JOBS = {}
+MANGA_PROFILE_JOBS = {}
+MANGA_METADATA_JOBS = {}
 
 X_ARCHIVE_UPLOAD_DIR = os.path.join(os.getcwd(), "x_archive_uploads")
 os.makedirs(X_ARCHIVE_UPLOAD_DIR, exist_ok=True)
@@ -1761,6 +1767,213 @@ def recheck_all_missing(background_tasks: BackgroundTasks, db: Session = Depends
 @app.get("/tags", response_model=List[schemas.Tag])
 def list_tags(db: Session = Depends(get_db)):
     return db.query(models.Tag).order_by(models.Tag.name.asc()).all()
+
+
+@app.get("/ai/recommendations/status", response_model=schemas.AiRecommendationStatus)
+def ai_recommendation_status():
+    config = ai_config.get_deepseek_config()
+    return {
+        "deepseek_configured": bool(config["api_key"]),
+        "model": config["model"],
+        "base_url": config["base_url"],
+        "key_saved": config["key_saved"],
+        "env_key_present": config["env_key_present"],
+    }
+
+
+@app.put("/ai/recommendations/config", response_model=schemas.AiRecommendationStatus)
+def update_ai_recommendation_config(payload: schemas.DeepSeekConfigUpdate):
+    config = ai_config.update_deepseek_config(
+        api_key=payload.api_key,
+        model=payload.model,
+        base_url=payload.base_url,
+        clear_api_key=payload.clear_api_key,
+    )
+    return {
+        "deepseek_configured": bool(config["api_key"]),
+        "model": config["model"],
+        "base_url": config["base_url"],
+        "key_saved": config["key_saved"],
+        "env_key_present": config["env_key_present"],
+    }
+
+
+def run_manga_profile_job(job_id: str, media_ids: list[int], sample_count: int, force: bool):
+    db = database.SessionLocal()
+    job = MANGA_PROFILE_JOBS[job_id]
+    try:
+        job["status"] = "running"
+        for media_id in media_ids:
+            media = db.query(models.Media).filter(models.Media.id == media_id).first()
+            if not media:
+                job["failed"] += 1
+                job["errors"].append(f"Media {media_id} not found")
+                continue
+            job["current_title"] = media.title or str(media.id)
+            try:
+                manga_profiles.analyze_media(db, media, sample_count=sample_count, force=force)
+                db.commit()
+                job["completed"] += 1
+                job["message"] = f"已分析 {job['completed']} / {job['total']}"
+            except Exception as exc:  # noqa: BLE001 - batch job should continue
+                db.rollback()
+                job["failed"] += 1
+                job["errors"].append(f"{media.title or media.id}: {exc}")
+        job["status"] = "completed"
+        job["current_title"] = ""
+        job["message"] = f"完成：{job['completed']} 个，失败 {job['failed']} 个"
+    except Exception as exc:  # noqa: BLE001
+        job["status"] = "failed"
+        job["message"] = str(exc)
+    finally:
+        db.close()
+
+
+@app.get("/recommend/manga-profiles/stats", response_model=schemas.MangaProfileStats)
+def manga_profile_stats(db: Session = Depends(get_db)):
+    return manga_profiles.profile_stats(db)
+
+
+@app.post("/recommend/manga-profiles/analyze", response_model=schemas.MangaProfileJob)
+def analyze_manga_profiles(
+    payload: schemas.MangaProfileAnalyzeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    if payload.media_id:
+        media = get_media_or_404(payload.media_id, db)
+        if media.media_type != "manga":
+            raise HTTPException(status_code=400, detail="只能分析漫画")
+        media_ids = [media.id]
+    else:
+        query = db.query(models.Media).filter(
+            models.Media.media_type == "manga",
+            models.Media.is_missing == False,  # noqa: E712
+            models.Media.duplicate_status.notin_(["checking", "strong_duplicate", "suspected_duplicate"]),
+        )
+        rows = query.order_by(models.Media.id.desc()).all()
+        media_ids = [
+            media.id for media in rows
+            if payload.force or manga_profiles.needs_profile(media)
+        ][: payload.limit]
+
+    job_id = str(uuid.uuid4())
+    MANGA_PROFILE_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": len(media_ids),
+        "completed": 0,
+        "failed": 0,
+        "message": "准备分析内容画像",
+        "current_title": "",
+        "errors": [],
+    }
+    background_tasks.add_task(run_manga_profile_job, job_id, media_ids, payload.sample_count, payload.force)
+    return MANGA_PROFILE_JOBS[job_id]
+
+
+@app.get("/recommend/manga-profiles/jobs/{job_id}", response_model=schemas.MangaProfileJob)
+def get_manga_profile_job(job_id: str):
+    job = MANGA_PROFILE_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+def run_manga_metadata_job(job_id: str, media_ids: list[int], force: bool):
+    db = database.SessionLocal()
+    job = MANGA_METADATA_JOBS[job_id]
+    try:
+        job["status"] = "running"
+        for media_id in media_ids:
+            media = db.query(models.Media).filter(models.Media.id == media_id).first()
+            if not media:
+                job["failed"] += 1
+                job["errors"].append(f"Media {media_id} not found")
+                continue
+            job["current_title"] = media.title or str(media.id)
+            try:
+                manga_metadata.build_metadata_profile(db, media, force=force)
+                db.commit()
+                job["completed"] += 1
+                job["message"] = f"已补全 {job['completed']} / {job['total']}"
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                job["failed"] += 1
+                job["errors"].append(f"{media.title or media.id}: {exc}")
+        job["status"] = "completed"
+        job["current_title"] = ""
+        job["message"] = f"完成：{job['completed']} 个，失败 {job['failed']} 个"
+    except Exception as exc:  # noqa: BLE001
+        job["status"] = "failed"
+        job["message"] = str(exc)
+    finally:
+        db.close()
+
+
+@app.get("/recommend/manga-metadata/stats", response_model=schemas.MangaMetadataStats)
+def manga_metadata_stats(db: Session = Depends(get_db)):
+    return manga_metadata.profile_stats(db)
+
+
+@app.post("/recommend/manga-metadata/analyze", response_model=schemas.MangaMetadataJob)
+def analyze_manga_metadata(
+    payload: schemas.MangaMetadataAnalyzeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    if payload.media_id:
+        media = get_media_or_404(payload.media_id, db)
+        if media.media_type != "manga":
+            raise HTTPException(status_code=400, detail="只能补全漫画元数据")
+        media_ids = [media.id]
+    else:
+        rows = (
+            db.query(models.Media)
+            .filter(
+                models.Media.media_type == "manga",
+                models.Media.is_missing == False,  # noqa: E712
+            )
+            .order_by(models.Media.id.desc())
+            .all()
+        )
+        media_ids = [
+            media.id for media in rows
+            if payload.force or manga_metadata.needs_metadata(media)
+        ][: payload.limit]
+
+    job_id = str(uuid.uuid4())
+    MANGA_METADATA_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": len(media_ids),
+        "completed": 0,
+        "failed": 0,
+        "message": "准备补全元数据",
+        "current_title": "",
+        "errors": [],
+    }
+    background_tasks.add_task(run_manga_metadata_job, job_id, media_ids, payload.force)
+    return MANGA_METADATA_JOBS[job_id]
+
+
+@app.get("/recommend/manga-metadata/jobs/{job_id}", response_model=schemas.MangaMetadataJob)
+def get_manga_metadata_job(job_id: str):
+    job = MANGA_METADATA_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@app.post("/recommend/manga", response_model=schemas.MangaRecommendationResponse)
+def recommend_manga(payload: schemas.MangaRecommendationRequest, db: Session = Depends(get_db)):
+    return recommendations.recommend_manga(
+        db=db,
+        query=payload.query,
+        limit=payload.limit,
+        avoid_tags=payload.avoid_tags,
+        preferred_tags=payload.preferred_tags,
+    )
 
 
 @app.post("/media/{media_id}/tags", response_model=schemas.Media)

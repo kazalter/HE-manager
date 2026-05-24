@@ -6,6 +6,7 @@ import DedupView from '../views/DedupView.vue'
 import UsersView from '../views/UsersView.vue'
 import StatsView from '../views/StatsView.vue'
 import CreatorsView from '../views/CreatorsView.vue'
+import MangaRecommendView from '../views/MangaRecommendView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -59,6 +60,11 @@ const router = createRouter({
       name: 'creator-detail',
       component: CreatorsView,
       props: true
+    },
+    {
+      path: '/recommend',
+      name: 'manga-recommend',
+      component: MangaRecommendView
     }
   ]
 })

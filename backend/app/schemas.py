@@ -96,6 +96,92 @@ class MediaUpdate(BaseModel):
 class TagCreate(TagBase):
     pass
 
+
+class MangaRecommendationRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    limit: int = Field(default=12, ge=1)
+    avoid_tags: List[str] = []
+    preferred_tags: List[str] = []
+
+
+class MangaRecommendationItem(BaseModel):
+    media: Media
+    reason: str
+    matched_tags: List[str] = []
+    score: float = 0
+
+
+class MangaRecommendationResponse(BaseModel):
+    recommendations: List[MangaRecommendationItem]
+    parsed_preferences: dict = {}
+    ai_enabled: bool = False
+    candidate_count: int = 0
+    message: Optional[str] = None
+
+
+class AiRecommendationStatus(BaseModel):
+    deepseek_configured: bool
+    model: str
+    base_url: str
+    key_saved: bool = False
+    env_key_present: bool = False
+
+
+class DeepSeekConfigUpdate(BaseModel):
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    clear_api_key: bool = False
+
+
+class MangaProfileStats(BaseModel):
+    total_manga: int = 0
+    profiled: int = 0
+    stale: int = 0
+    missing: int = 0
+
+
+class MangaProfileAnalyzeRequest(BaseModel):
+    media_id: Optional[int] = None
+    limit: int = Field(default=20, ge=1)
+    sample_count: int = Field(default=10, ge=1, le=30)
+    force: bool = False
+
+
+class MangaProfileJob(BaseModel):
+    job_id: str
+    status: str
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    message: str = ""
+    current_title: str = ""
+    errors: List[str] = []
+
+
+class MangaMetadataStats(BaseModel):
+    total_manga: int = 0
+    profiled: int = 0
+    stale: int = 0
+    missing: int = 0
+
+
+class MangaMetadataAnalyzeRequest(BaseModel):
+    media_id: Optional[int] = None
+    limit: int = Field(default=100, ge=1)
+    force: bool = False
+
+
+class MangaMetadataJob(BaseModel):
+    job_id: str
+    status: str
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    message: str = ""
+    current_title: str = ""
+    errors: List[str] = []
+
 class FolderBase(BaseModel):
     path: str
     scan_mode: str = "video"
