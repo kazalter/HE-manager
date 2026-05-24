@@ -5,17 +5,25 @@ import zipfile
 from datetime import datetime
 
 from PIL import Image
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from app import models, scanner
+from app import media_cleanup, models, scanner
 
 
 class MediaCoreTest(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        event.listen(self.engine, "connect", self._enable_foreign_keys)
         models.Base.metadata.create_all(bind=self.engine)
         self.Session = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+
+    @staticmethod
+    def _enable_foreign_keys(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
     def test_media_metadata_and_tags_are_persisted(self):
         db = self.Session()
@@ -113,6 +121,69 @@ class MediaCoreTest(unittest.TestCase):
             db.commit()
 
             self.assertEqual(saved.view_status, "viewed")
+        finally:
+            db.close()
+
+    def test_folder_media_delete_detaches_cross_table_references(self):
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Imported", scan_mode="image")
+            media_a = models.Media(
+                folder=folder,
+                title="a.jpg",
+                relative_path="a.jpg",
+                absolute_path="D:\\Imported\\a.jpg",
+                media_type="image",
+                extension=".jpg",
+                file_size=100,
+            )
+            media_b = models.Media(
+                folder=folder,
+                title="b.jpg",
+                relative_path="b.jpg",
+                absolute_path="D:\\Imported\\b.jpg",
+                media_type="image",
+                extension=".jpg",
+                file_size=100,
+            )
+            source = models.XImportSource(name="X")
+            post = models.XPost(source=source, tweet_id="1", url="https://x.test/1")
+            post.media_items.append(
+                models.XMediaItem(
+                    media_index=0,
+                    media_type="photo",
+                    remote_url="https://x.test/a.jpg",
+                    status="downloaded",
+                )
+            )
+            db.add_all([folder, source])
+            db.commit()
+
+            media_ids = [media_a.id, media_b.id]
+            x_item = db.query(models.XMediaItem).one()
+            x_item.library_media_id = media_a.id
+            db.add(
+                models.DuplicateCandidate(
+                    existing_media_id=media_a.id,
+                    candidate_media_id=media_b.id,
+                    level="suspected_duplicate",
+                    similarity=90,
+                )
+            )
+            db.commit()
+
+            db.delete(folder)
+            with self.assertRaises(IntegrityError):
+                db.commit()
+            db.rollback()
+
+            media_cleanup.detach_media_references(db, media_ids)
+            db.delete(folder)
+            db.commit()
+
+            self.assertEqual(db.query(models.Media).count(), 0)
+            self.assertIsNone(db.query(models.XMediaItem).one().library_media_id)
+            self.assertEqual(db.query(models.DuplicateCandidate).count(), 0)
         finally:
             db.close()
 

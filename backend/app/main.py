@@ -24,6 +24,7 @@ from . import (
     creators as creators_mod,
     database,
     external_sources,
+    media_cleanup,
     models,
     schemas,
     scanner,
@@ -1495,6 +1496,7 @@ def delete_folder(folder_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Folder not found")
 
     associated_media = db.query(models.Media).filter(models.Media.folder_id == folder_id).all()
+    media_cleanup.detach_media_references(db, [media.id for media in associated_media])
     for media in associated_media:
         if not media.cover_path:
             continue
@@ -1675,13 +1677,7 @@ def delete_media(media_id: int, db: Session = Depends(get_db)):
 
     # Clean up FK references that don't cascade automatically. SQLite enforces
     # foreign_keys=ON so leaving these would block the delete with a 500.
-    db.query(models.XMediaItem).filter(
-        models.XMediaItem.library_media_id == media.id
-    ).update({models.XMediaItem.library_media_id: None}, synchronize_session=False)
-    db.query(models.DuplicateCandidate).filter(
-        (models.DuplicateCandidate.existing_media_id == media.id)
-        | (models.DuplicateCandidate.candidate_media_id == media.id)
-    ).delete(synchronize_session=False)
+    media_cleanup.detach_media_references(db, [media.id])
 
     db.delete(media)
     db.commit()
@@ -2820,13 +2816,7 @@ def delete_media_file(
 
     # Same FK cleanup as DELETE /media/{id}: SQLite foreign_keys=ON would otherwise
     # block deletion when x_media_items or duplicate_candidates still reference this row.
-    db.query(models.XMediaItem).filter(
-        models.XMediaItem.library_media_id == media.id
-    ).update({models.XMediaItem.library_media_id: None}, synchronize_session=False)
-    db.query(models.DuplicateCandidate).filter(
-        (models.DuplicateCandidate.existing_media_id == media.id)
-        | (models.DuplicateCandidate.candidate_media_id == media.id)
-    ).delete(synchronize_session=False)
+    media_cleanup.detach_media_references(db, [media.id])
 
     fp = db.query(models.MediaFingerprint).filter(models.MediaFingerprint.media_id == media.id).first()
     if fp:
