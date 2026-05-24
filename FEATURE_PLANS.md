@@ -57,6 +57,7 @@
 - 05-19：⑧ 启动卡顿根因 = 测的是 debug 包。加 `buildTypes.release` + `profileinstaller` + `baseline-prof.txt`，**用户实测已流畅**。
 - 05-19：④ P1 — phash 列+幂等迁移+DCT pHash 计算（4 类媒体复用既有采样）+持久化+缓存失效回填+观察脚本。pytest 36 绿，零回归，未改判定。
 - 05-19：④ P2 — pHash 接入 `classify()`（≤6/≤10 阈值，取较强者，不改 SHA 函数）+ ≥17 veto 降噪；全库回填+重分类（一次性脚本）。真重复召回 47%→100%，noise pair 579→136，孤儿 13→0。汉明距离入 reason（免改前端）。pytest 36 绿。
+- 05-24：① 统计看板优化（P1+P2+P3）。后端：月/日分桶 SQL 化（strftime+GROUP BY），4 endpoint+1 新 `/stats/highlights` 加 30s TTL 缓存，overview 增 `by_type_size`、activity 增 `by_type`；首次冷启 ~26ms，命中 0.004ms。前端 StatsView：① 库增长改"柱（月增）+ 曲线（累计）"；② 活跃热力图加类型 tab（全部/视频/漫画/杂图/音频）；③ 类型/收藏/来源 bars/cards + 关注作品封面可点击跳转 Library；④ 新增 Top 创作者 / 最长视频 / 热门标签三张卡（按媒体数/时长/使用数）。HomeView 加 `?source=` 查询参数。pytest 35 绿，vue-tsc 0。
 
 ## 未竟（按优先级）
 

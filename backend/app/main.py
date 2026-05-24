@@ -2857,6 +2857,13 @@ def stats_attention(db: Session = Depends(get_db)):
     return stats_mod.attention(db)
 
 
+@app.get("/stats/highlights")
+def stats_highlights(limit: int = 10, db: Session = Depends(get_db)):
+    # Bundles top creators / longest videos / hottest tags so the dashboard
+    # only needs one extra request for the "highlights" row.
+    return stats_mod.highlights(db, limit=limit)
+
+
 # ============================================================================
 # Creators — unified X authors + manga artists, backed by app/creators.py
 # ============================================================================

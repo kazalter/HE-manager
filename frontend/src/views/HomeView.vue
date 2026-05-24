@@ -149,6 +149,10 @@ watch([() => props.mediaType, selectedTag, sortBy, favoriteOnly, sourceFilter], 
 watch(() => route.query.favorite, value => {
   favoriteOnly.value = value === 'true'
 }, { immediate: true })
+watch(() => route.query.source, value => {
+  const v = typeof value === 'string' ? value : ''
+  sourceFilter.value = (v === 'x' || v === 'wnacg' || v === 'local') ? v : ''
+}, { immediate: true })
 watch(() => route.query.media, () => {
   syncSelectedMediaFromRoute()
 })

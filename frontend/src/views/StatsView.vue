@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import axios from 'axios'
 import {
   BarChart3,
@@ -7,6 +8,7 @@ import {
   Film,
   Image as ImageIcon,
   Layers,
+  Music,
   RefreshCw,
   Sparkles,
   Star,
@@ -15,8 +17,10 @@ import { API_BASE_URL, thumbnailUrl } from '../config'
 import type {
   StatAttentionItem,
   StatsActivity,
+  StatsActivityBucket,
   StatsAttention,
   StatsDistribution,
+  StatsHighlights,
   StatsOverview,
 } from '../types'
 
@@ -28,21 +32,24 @@ const overview = ref<StatsOverview | null>(null)
 const distribution = ref<StatsDistribution | null>(null)
 const activity = ref<StatsActivity | null>(null)
 const attention = ref<StatsAttention | null>(null)
+const highlights = ref<StatsHighlights | null>(null)
 
 const fetchAll = async () => {
   loading.value = overview.value === null
   errorMessage.value = ''
   try {
-    const [o, d, a, at] = await Promise.all([
+    const [o, d, a, at, hi] = await Promise.all([
       axios.get<StatsOverview>(`${API_BASE_URL}/stats/overview`),
       axios.get<StatsDistribution>(`${API_BASE_URL}/stats/distribution`),
       axios.get<StatsActivity>(`${API_BASE_URL}/stats/activity`, { params: { days: 365 } }),
       axios.get<StatsAttention>(`${API_BASE_URL}/stats/attention`),
+      axios.get<StatsHighlights>(`${API_BASE_URL}/stats/highlights`, { params: { limit: 10 } }),
     ])
     overview.value = o.data
     distribution.value = d.data
     activity.value = a.data
     attention.value = at.data
+    highlights.value = hi.data
   } catch (err: any) {
     errorMessage.value = err?.response?.data?.detail || '加载统计数据失败，请确认后端服务正在运行。'
   } finally {
@@ -79,14 +86,20 @@ const typeMeta: Record<string, { label: string; icon: any }> = {
   video: { label: '视频', icon: Film },
   manga: { label: '漫画', icon: Layers },
   image: { label: '杂图', icon: ImageIcon },
+  audio: { label: '音频', icon: Music },
 }
 
 const sourceLabel = (key: string) => {
   if (key === 'local') return '本地'
   if (key === 'x') return 'X (推特)'
   if (key === 'wnacg') return 'WNACG'
+  if (key === 'asmr') return 'ASMR'
   return key
 }
+
+// Only sources that HomeView actually filters on get a click-through link.
+// Others (e.g. 'asmr') are shown but not linkable to avoid dead routes.
+const sourceLinkable = (key: string) => key === 'x' || key === 'wnacg' || key === 'local'
 
 const statusLabel: Record<string, string> = {
   unviewed: '未看',
@@ -99,12 +112,12 @@ const overviewCards = computed(() => {
   const o = overview.value
   if (!o) return []
   return [
-    { label: '媒体总数', value: o.total.toLocaleString(), icon: BarChart3, accent: true },
-    { label: '收藏', value: o.favorites.toLocaleString(), icon: Star },
+    { label: '媒体总数', value: o.total.toLocaleString(), icon: BarChart3, accent: true, to: '/' },
+    { label: '收藏', value: o.favorites.toLocaleString(), icon: Star, to: '/?favorite=true' },
     { label: '已评分', value: o.rated.toLocaleString(), icon: Sparkles },
     { label: '平均评分', value: o.average_rating ? o.average_rating.toFixed(2) : '—', icon: Star },
     { label: '库总体积', value: formatSize(o.total_size_bytes), icon: Layers },
-    { label: '视频总时长', value: formatDurationHours(o.total_duration_seconds), icon: Clock },
+    { label: '视频总时长', value: formatDurationHours(o.total_duration_seconds), icon: Clock, to: '/type/video' },
   ]
 })
 
@@ -118,7 +131,27 @@ const typeBars = computed(() => {
     icon: typeMeta[key]?.icon ?? ImageIcon,
     count,
     pct: Math.round((count / max) * 100),
+    to: `/type/${key}`,
   }))
+})
+
+// "Where is my space going" — sorted by size desc, with each type's GB and share.
+const typeSizeBars = computed(() => {
+  const o = overview.value
+  if (!o) return []
+  const totalSize = Math.max(1, o.total_size_bytes)
+  return Object.entries(o.by_type_size)
+    .filter(([, bytes]) => bytes > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, bytes]) => ({
+      key,
+      label: typeMeta[key]?.label ?? key,
+      icon: typeMeta[key]?.icon ?? ImageIcon,
+      bytes,
+      size: formatSize(bytes),
+      pct: Math.round((bytes / totalSize) * 100),
+      to: `/type/${key}`,
+    }))
 })
 
 const statusBars = computed(() => {
@@ -155,33 +188,80 @@ const sourceBars = computed(() => {
     label: sourceLabel(key),
     count,
     pct: Math.round((count / max) * 100),
+    to: sourceLinkable(key) ? `/?source=${key}` : null,
   }))
 })
 
-// ---- growth line (SVG) ----
-const growthPath = computed(() => {
+// ---- growth: monthly bars + cumulative line ----
+// We always draw on a 100×100 viewBox and let SVG stretch. Bars use the `added`
+// field, the line + area use `cumulative`. If there's only one month the line
+// would be a single point — fall back to bar-only.
+const growthChart = computed(() => {
   const g = distribution.value?.growth ?? []
-  if (g.length < 2) return null
+  if (g.length === 0) return null
   const w = 100
   const h = 100
+  const maxAdded = Math.max(1, ...g.map(p => p.added))
   const maxCum = Math.max(1, ...g.map(p => p.cumulative))
-  const step = w / (g.length - 1)
-  const pts = g.map((p, i) => `${(i * step).toFixed(2)},${(h - (p.cumulative / maxCum) * h).toFixed(2)}`)
+
+  // Slot widths: each month occupies a column; bar is ~70% of that, centered.
+  const slot = w / g.length
+  const barW = slot * 0.7
+  const bars = g.map((p, i) => ({
+    x: i * slot + (slot - barW) / 2,
+    y: h - (p.added / maxAdded) * h,
+    w: barW,
+    height: (p.added / maxAdded) * h,
+    month: p.month,
+    added: p.added,
+    cumulative: p.cumulative,
+  }))
+
+  // Cumulative line is anchored to the *center* of each bar's slot.
+  const pts = g.map((p, i) => {
+    const x = i * slot + slot / 2
+    const y = h - (p.cumulative / maxCum) * h
+    return `${x.toFixed(2)},${y.toFixed(2)}`
+  })
+
   return {
-    line: pts.join(' '),
-    area: `0,${h} ${pts.join(' ')} ${w},${h}`,
+    bars,
+    line: pts.length > 1 ? pts.join(' ') : null,
+    area: pts.length > 1 ? `${(slot / 2).toFixed(2)},${h} ${pts.join(' ')} ${(w - slot / 2).toFixed(2)},${h}` : null,
     first: g[0],
     last: g[g.length - 1],
-    points: g.length,
+    months: g.length,
+    maxCum,
   }
 })
 
-// ---- activity heatmap ----
+// ---- activity heatmap (with per-type filter) ----
+const heatmapType = ref<'all' | string>('all')
+
+const heatmapTypeTabs = computed(() => {
+  const a = activity.value
+  const tabs: { key: string; label: string; total: number }[] = [
+    { key: 'all', label: '全部', total: a?.total ?? 0 },
+  ]
+  if (!a) return tabs
+  const order = ['video', 'manga', 'image', 'audio']
+  for (const key of order) {
+    const buckets = a.by_type?.[key]
+    if (!buckets || buckets.length === 0) continue
+    const total = buckets.reduce((s, b) => s + b.count, 0)
+    tabs.push({ key, label: typeMeta[key]?.label ?? key, total })
+  }
+  return tabs
+})
+
 const heatmap = computed(() => {
   const a = activity.value
   if (!a) return null
+
+  const source: StatsActivityBucket[] =
+    heatmapType.value === 'all' ? a.buckets : (a.by_type?.[heatmapType.value] ?? [])
   const counts = new Map<string, number>()
-  for (const b of a.buckets) counts.set(b.date, b.count)
+  for (const b of source) counts.set(b.date, b.count)
 
   const to = new Date(a.to_date + 'T00:00:00')
   const from = new Date(to)
@@ -190,7 +270,9 @@ const heatmap = computed(() => {
   const gridStart = new Date(from)
   gridStart.setDate(gridStart.getDate() - gridStart.getDay())
 
-  const max = Math.max(1, a.max)
+  const subsetMax = source.length ? Math.max(...source.map(b => b.count)) : 0
+  const subsetTotal = source.reduce((s, b) => s + b.count, 0)
+  const max = Math.max(1, subsetMax)
   const level = (c: number) => {
     if (c <= 0) return 0
     const r = c / max
@@ -213,7 +295,7 @@ const heatmap = computed(() => {
     }
     weeks.push(week)
   }
-  return { weeks, total: a.total, max: a.max }
+  return { weeks, total: subsetTotal, max: subsetMax }
 })
 
 const levelClass = (lvl: number, inRange: boolean) => {
@@ -230,6 +312,18 @@ const levelClass = (lvl: number, inRange: boolean) => {
 const attentionEmpty = computed(
   () => attention.value && attention.value.dusty.length === 0 && attention.value.unrated.length === 0,
 )
+
+// ---- highlights helpers ----
+const creatorLink = (c: { kind: string; screen_name: string | null }) =>
+  c.kind === 'x' && c.screen_name ? `/creators/${c.screen_name}` : null
+
+const formatDurationShort = (seconds: number) => {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
 
 const lastOpenedText = (item: StatAttentionItem) => {
   if (!item.last_opened_at) return '从未打开'
@@ -273,30 +367,38 @@ const lastOpenedText = (item: StatAttentionItem) => {
     <div v-else class="space-y-6">
       <!-- overview cards -->
       <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <div
+        <component
+          :is="card.to ? RouterLink : 'div'"
           v-for="card in overviewCards"
           :key="card.label"
-          class="rounded-2xl p-4 border backdrop-blur-xl transition-all"
-          :class="card.accent
-            ? 'bg-accent/10 border-accent/25'
-            : 'bg-white/[0.03] border-white/10'"
+          :to="card.to"
+          class="rounded-2xl p-4 border backdrop-blur-xl transition-all block"
+          :class="[
+            card.accent ? 'bg-accent/10 border-accent/25' : 'bg-white/[0.03] border-white/10',
+            card.to ? 'hover:bg-white/[0.06] hover:border-white/20 cursor-pointer' : '',
+          ]"
         >
           <component :is="card.icon" :size="18" class="text-accent mb-3" />
           <div class="text-2xl font-black text-white truncate" :title="String(card.value)">
             {{ card.value }}
           </div>
           <div class="text-xs text-white/45 mt-1">{{ card.label }}</div>
-        </div>
+        </component>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- by type -->
+        <!-- by type (count + size) -->
         <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
-          <h2 class="text-sm font-bold text-white/80 mb-4">按类型</h2>
+          <h2 class="text-sm font-bold text-white/80 mb-4">按类型（数量）</h2>
           <div class="space-y-3">
-            <div v-for="b in typeBars" :key="b.key">
+            <RouterLink
+              v-for="b in typeBars"
+              :key="b.key"
+              :to="b.to"
+              class="block group"
+            >
               <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="flex items-center gap-2 text-white/70">
+                <span class="flex items-center gap-2 text-white/70 group-hover:text-white transition-colors">
                   <component :is="b.icon" :size="15" class="text-accent" />{{ b.label }}
                 </span>
                 <span class="text-white/50 tabular-nums">{{ b.count.toLocaleString() }}</span>
@@ -304,24 +406,32 @@ const lastOpenedText = (item: StatAttentionItem) => {
               <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
                 <div class="h-full rounded-full bg-accent transition-all duration-500" :style="{ width: b.pct + '%' }" />
               </div>
-            </div>
+            </RouterLink>
           </div>
 
-          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">观看状态</h2>
-          <div class="space-y-3">
-            <div v-for="b in statusBars" :key="b.key">
+          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">按类型（占用空间）</h2>
+          <div v-if="typeSizeBars.length" class="space-y-3">
+            <RouterLink
+              v-for="b in typeSizeBars"
+              :key="b.key"
+              :to="b.to"
+              class="block group"
+            >
               <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="text-white/70">{{ b.label }}</span>
-                <span class="text-white/50 tabular-nums">{{ b.count.toLocaleString() }} · {{ b.pct }}%</span>
+                <span class="flex items-center gap-2 text-white/70 group-hover:text-white transition-colors">
+                  <component :is="b.icon" :size="15" class="text-accent" />{{ b.label }}
+                </span>
+                <span class="text-white/50 tabular-nums">{{ b.size }} · {{ b.pct }}%</span>
               </div>
               <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-accent/70 transition-all duration-500" :style="{ width: b.pct + '%' }" />
+                <div class="h-full rounded-full bg-accent/80 transition-all duration-500" :style="{ width: b.pct + '%' }" />
               </div>
-            </div>
+            </RouterLink>
           </div>
+          <div v-else class="text-white/40 text-xs py-2">暂无可统计的体积信息。</div>
         </section>
 
-        <!-- rating + source -->
+        <!-- rating + status + source -->
         <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
           <h2 class="text-sm font-bold text-white/80 mb-4">评分分布</h2>
           <div class="space-y-2.5">
@@ -339,60 +449,111 @@ const lastOpenedText = (item: StatAttentionItem) => {
             </div>
           </div>
 
+          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">观看状态</h2>
+          <div class="space-y-3">
+            <div v-for="b in statusBars" :key="b.key">
+              <div class="flex items-center justify-between text-sm mb-1.5">
+                <span class="text-white/70">{{ b.label }}</span>
+                <span class="text-white/50 tabular-nums">{{ b.count.toLocaleString() }} · {{ b.pct }}%</span>
+              </div>
+              <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
+                <div class="h-full rounded-full bg-accent/70 transition-all duration-500" :style="{ width: b.pct + '%' }" />
+              </div>
+            </div>
+          </div>
+
           <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">来源占比</h2>
           <div class="space-y-3">
-            <div v-for="s in sourceBars" :key="s.key">
+            <component
+              :is="s.to ? RouterLink : 'div'"
+              v-for="s in sourceBars"
+              :key="s.key"
+              :to="s.to ?? undefined"
+              class="block group"
+            >
               <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="text-white/70">{{ s.label }}</span>
+                <span class="text-white/70 group-hover:text-white transition-colors">{{ s.label }}</span>
                 <span class="text-white/50 tabular-nums">{{ s.count.toLocaleString() }}</span>
               </div>
               <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
                 <div class="h-full rounded-full bg-accent/60 transition-all duration-500" :style="{ width: s.pct + '%' }" />
               </div>
-            </div>
+            </component>
           </div>
         </section>
       </div>
 
-      <!-- library growth -->
+      <!-- library growth: monthly bars + cumulative line -->
       <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
-        <h2 class="text-sm font-bold text-white/80 mb-4">库增长（按月累计）</h2>
-        <div v-if="growthPath" class="relative">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-bold text-white/80">库增长</h2>
+          <span v-if="growthChart" class="text-xs text-white/40">
+            柱：当月新增 · 线：累计
+          </span>
+        </div>
+        <div v-if="growthChart" class="relative">
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="w-full h-40">
             <defs>
               <linearGradient id="growthGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="rgb(var(--color-accent))" stop-opacity="0.35" />
+                <stop offset="0%" stop-color="rgb(var(--color-accent))" stop-opacity="0.32" />
                 <stop offset="100%" stop-color="rgb(var(--color-accent))" stop-opacity="0" />
               </linearGradient>
             </defs>
-            <polygon :points="growthPath.area" fill="url(#growthGrad)" />
-            <polyline
-              :points="growthPath.line"
-              fill="none"
-              stroke="rgb(var(--color-accent))"
-              stroke-width="1.5"
-              vector-effect="non-scaling-stroke"
-              stroke-linejoin="round"
-            />
+            <!-- monthly added bars -->
+            <rect
+              v-for="bar in growthChart.bars"
+              :key="bar.month"
+              :x="bar.x"
+              :y="bar.y"
+              :width="bar.w"
+              :height="bar.height"
+              fill="rgb(var(--color-accent))"
+              fill-opacity="0.55"
+              rx="0.5"
+            >
+              <title>{{ bar.month }}：新增 {{ bar.added.toLocaleString() }}，累计 {{ bar.cumulative.toLocaleString() }}</title>
+            </rect>
+            <!-- cumulative line + area -->
+            <template v-if="growthChart.line">
+              <polygon :points="growthChart.area" fill="url(#growthGrad)" />
+              <polyline
+                :points="growthChart.line"
+                fill="none"
+                stroke="rgb(var(--color-accent))"
+                stroke-width="1.5"
+                vector-effect="non-scaling-stroke"
+                stroke-linejoin="round"
+              />
+            </template>
           </svg>
           <div class="flex justify-between text-xs text-white/40 mt-2">
-            <span>{{ growthPath.first.month }}</span>
-            <span>共 {{ growthPath.last.cumulative.toLocaleString() }} 项 · {{ growthPath.points }} 个月</span>
-            <span>{{ growthPath.last.month }}</span>
+            <span>{{ growthChart.first.month }}</span>
+            <span>共 {{ growthChart.last.cumulative.toLocaleString() }} 项 · {{ growthChart.months }} 个月</span>
+            <span>{{ growthChart.last.month }}</span>
           </div>
         </div>
         <div v-else class="text-white/40 text-sm py-6 text-center">
-          数据不足以绘制曲线（库内媒体集中在同一个月入库）。
+          暂无入库数据。
         </div>
       </section>
 
-      <!-- activity heatmap -->
+      <!-- activity heatmap with type filter -->
       <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 class="text-sm font-bold text-white/80">近一年活跃度</h2>
-          <span class="text-xs text-white/40" v-if="heatmap">
-            共打开 {{ heatmap.total.toLocaleString() }} 次 · 单日峰值 {{ heatmap.max }}
-          </span>
+          <div class="flex items-center gap-1 bg-white/[0.04] border border-white/10 rounded-xl p-1">
+            <button
+              v-for="tab in heatmapTypeTabs"
+              :key="tab.key"
+              @click="heatmapType = tab.key"
+              class="px-2.5 py-1 rounded-lg text-xs transition-all tabular-nums"
+              :class="heatmapType === tab.key
+                ? 'bg-accent/25 text-white'
+                : 'text-white/55 hover:text-white/80'"
+            >
+              {{ tab.label }} · {{ tab.total.toLocaleString() }}
+            </button>
+          </div>
         </div>
         <div v-if="heatmap" class="overflow-x-auto custom-scrollbar pb-2">
           <div class="flex gap-[3px] min-w-max">
@@ -407,16 +568,130 @@ const lastOpenedText = (item: StatAttentionItem) => {
             </div>
           </div>
         </div>
-        <div class="flex items-center justify-end gap-1.5 mt-3 text-xs text-white/40">
-          <span>少</span>
-          <div class="w-[11px] h-[11px] rounded-[2px] bg-white/[0.04]" />
-          <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/25" />
-          <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/45" />
-          <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/70" />
-          <div class="w-[11px] h-[11px] rounded-[2px] bg-accent" />
-          <span>多</span>
+        <div class="flex items-center justify-between mt-3 text-xs text-white/40">
+          <span v-if="heatmap">
+            共打开 {{ heatmap.total.toLocaleString() }} 次 · 单日峰值 {{ heatmap.max }}
+          </span>
+          <div class="flex items-center gap-1.5 ml-auto">
+            <span>少</span>
+            <div class="w-[11px] h-[11px] rounded-[2px] bg-white/[0.04]" />
+            <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/25" />
+            <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/45" />
+            <div class="w-[11px] h-[11px] rounded-[2px] bg-accent/70" />
+            <div class="w-[11px] h-[11px] rounded-[2px] bg-accent" />
+            <span>多</span>
+          </div>
         </div>
       </section>
+
+      <!-- highlights: top creators / longest videos / top tags -->
+      <div
+        v-if="highlights && (highlights.top_creators.length || highlights.top_videos.length || highlights.top_tags.length)"
+        class="grid grid-cols-1 lg:grid-cols-3 gap-6"
+      >
+        <section
+          v-if="highlights.top_creators.length"
+          class="rounded-2xl p-5 bg-white/[0.03] border border-white/10"
+        >
+          <h2 class="text-sm font-bold text-white/80 mb-1">Top 创作者</h2>
+          <p class="text-xs text-white/40 mb-4">按入库作品数</p>
+          <ol class="space-y-2">
+            <li
+              v-for="(c, idx) in highlights.top_creators"
+              :key="c.key"
+              class="flex items-center gap-3"
+            >
+              <span class="w-5 text-center text-xs text-white/35 tabular-nums">{{ idx + 1 }}</span>
+              <component
+                :is="creatorLink(c) ? RouterLink : 'div'"
+                :to="creatorLink(c) ?? undefined"
+                class="flex items-center gap-3 flex-1 min-w-0 group"
+              >
+                <div class="w-9 h-9 rounded-lg overflow-hidden bg-black/30 shrink-0">
+                  <img
+                    v-if="c.cover_path"
+                    :src="thumbnailUrl(c.cover_path)"
+                    class="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div
+                    class="text-sm text-white/80 truncate"
+                    :class="creatorLink(c) ? 'group-hover:text-white' : ''"
+                    :title="c.display_name"
+                  >
+                    {{ c.display_name }}
+                  </div>
+                  <div class="text-[10px] text-white/35">
+                    {{ c.kind === 'x' ? 'X 作者' : '漫画作者' }}
+                  </div>
+                </div>
+                <span class="text-xs text-white/50 tabular-nums shrink-0">
+                  {{ c.media_count.toLocaleString() }}
+                </span>
+              </component>
+            </li>
+          </ol>
+        </section>
+
+        <section
+          v-if="highlights.top_videos.length"
+          class="rounded-2xl p-5 bg-white/[0.03] border border-white/10"
+        >
+          <h2 class="text-sm font-bold text-white/80 mb-1">最长视频</h2>
+          <p class="text-xs text-white/40 mb-4">按时长，点开跳转详情</p>
+          <ol class="space-y-2">
+            <li
+              v-for="(v, idx) in highlights.top_videos"
+              :key="v.id"
+              class="flex items-center gap-3"
+            >
+              <span class="w-5 text-center text-xs text-white/35 tabular-nums">{{ idx + 1 }}</span>
+              <RouterLink
+                :to="`/?media=${v.id}`"
+                class="flex items-center gap-3 flex-1 min-w-0 group"
+              >
+                <div class="w-12 h-9 rounded-lg overflow-hidden bg-black/30 shrink-0">
+                  <img
+                    v-if="v.cover_path"
+                    :src="thumbnailUrl(v.cover_path)"
+                    class="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm text-white/80 group-hover:text-white truncate" :title="v.title">
+                    {{ v.title }}
+                  </div>
+                  <div class="text-[10px] text-white/35">{{ formatSize(v.file_size) }}</div>
+                </div>
+                <span class="text-xs text-white/50 tabular-nums shrink-0">
+                  {{ formatDurationShort(v.duration) }}
+                </span>
+              </RouterLink>
+            </li>
+          </ol>
+        </section>
+
+        <section
+          v-if="highlights.top_tags.length"
+          class="rounded-2xl p-5 bg-white/[0.03] border border-white/10"
+        >
+          <h2 class="text-sm font-bold text-white/80 mb-1">热门标签</h2>
+          <p class="text-xs text-white/40 mb-4">用得最多的标签（不含作者）</p>
+          <div class="flex flex-wrap gap-2">
+            <span
+              v-for="t in highlights.top_tags"
+              :key="`${t.namespace}:${t.name}`"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.05] border border-white/10 text-xs text-white/75"
+            >
+              {{ t.name }}
+              <span class="text-white/40 tabular-nums">{{ t.count }}</span>
+            </span>
+          </div>
+        </section>
+      </div>
 
       <!-- attention -->
       <div v-if="attention && !attentionEmpty" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -427,10 +702,11 @@ const lastOpenedText = (item: StatAttentionItem) => {
           <h2 class="text-sm font-bold text-white/80 mb-1">尘封的高分作品</h2>
           <p class="text-xs text-white/40 mb-4">评分 ≥ 4，但已 {{ attention.stale_days }} 天没打开</p>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div
+            <RouterLink
               v-for="item in attention.dusty"
               :key="item.id"
-              class="rounded-xl overflow-hidden bg-white/[0.03] border border-white/10 group"
+              :to="`/?media=${item.id}`"
+              class="rounded-xl overflow-hidden bg-white/[0.03] border border-white/10 group block hover:border-white/25 transition-colors"
             >
               <div class="aspect-[3/4] bg-black/30 overflow-hidden">
                 <img
@@ -450,7 +726,7 @@ const lastOpenedText = (item: StatAttentionItem) => {
                   <span class="text-[10px] text-white/35">{{ lastOpenedText(item) }}</span>
                 </div>
               </div>
-            </div>
+            </RouterLink>
           </div>
         </section>
 
@@ -461,10 +737,11 @@ const lastOpenedText = (item: StatAttentionItem) => {
           <h2 class="text-sm font-bold text-white/80 mb-1">看过但还没评分</h2>
           <p class="text-xs text-white/40 mb-4">补个评分，让推荐更准</p>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <div
+            <RouterLink
               v-for="item in attention.unrated"
               :key="item.id"
-              class="rounded-xl overflow-hidden bg-white/[0.03] border border-white/10 group"
+              :to="`/?media=${item.id}`"
+              class="rounded-xl overflow-hidden bg-white/[0.03] border border-white/10 group block hover:border-white/25 transition-colors"
             >
               <div class="aspect-[3/4] bg-black/30 overflow-hidden">
                 <img
@@ -479,7 +756,7 @@ const lastOpenedText = (item: StatAttentionItem) => {
                 <div class="text-xs text-white/75 truncate" :title="item.title">{{ item.title }}</div>
                 <div class="text-[10px] text-white/35 mt-1">{{ lastOpenedText(item) }}</div>
               </div>
-            </div>
+            </RouterLink>
           </div>
         </section>
       </div>

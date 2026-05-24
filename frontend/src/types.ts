@@ -271,7 +271,8 @@ export interface CreatorDetail {
 
 export interface StatsOverview {
     total: number;
-    by_type: Record<string, number>;        // {'video': N, 'manga': N, 'image': N, ...}
+    by_type: Record<string, number>;        // {'video': N, 'manga': N, 'image': N, 'audio': N}
+    by_type_size: Record<string, number>;   // same keys as by_type, sum(file_size) per type
     view_status: Record<string, number>;    // {'unviewed': N, 'viewing': N, 'viewed': N}
     favorites: number;
     rated: number;
@@ -283,6 +284,7 @@ export interface StatsOverview {
 
 export interface StatsDistributionGrowthPoint {
     month: string;        // 'YYYY-MM'
+    added: number;        // new items in that month
     cumulative: number;
 }
 
@@ -303,6 +305,7 @@ export interface StatsActivity {
     buckets: StatsActivityBucket[];
     total: number;
     max: number;
+    by_type: Record<string, StatsActivityBucket[]>;  // per-media-type buckets, same date keys
 }
 
 export interface StatAttentionItem {
@@ -317,4 +320,36 @@ export interface StatsAttention {
     dusty: StatAttentionItem[];
     unrated: StatAttentionItem[];
     stale_days: number;
+}
+
+export interface StatsTopCreator {
+    key: string;            // 'x:<screen_name>' or 'a:<artist>'
+    kind: 'x' | 'artist';
+    screen_name: string | null;
+    display_name: string;
+    media_count: number;
+    cover_path?: string | null;
+}
+
+export interface StatsTopVideo {
+    id: number;
+    title: string;
+    cover_path?: string | null;
+    duration: number;       // seconds
+    rating: number;
+    file_size: number;
+    last_opened_at: string | null;
+}
+
+export interface StatsTopTag {
+    name: string;
+    namespace: string;
+    count: number;
+}
+
+export interface StatsHighlights {
+    limit: number;
+    top_creators: StatsTopCreator[];
+    top_videos: StatsTopVideo[];
+    top_tags: StatsTopTag[];
 }
