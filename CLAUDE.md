@@ -23,6 +23,37 @@
 导致用户的真实功能"看似消失"——花了大半天追查才发现是 reset 偷偷覆盖了 tracked 文件。
 完整复盘见本会话历史（5/21-5/22）。
 
+## ⚠️ 硬规则 — 防把不相关改动夹带进 commit（任何 Claude 接手都必须遵守）
+
+**触发条件**：要执行 `git add <file>` / `git add .` / `git add -A` / `git commit -a` 之前。
+
+**强制流程**（不能跳）：
+1. **先跑 `git status`**——看清你**这次**改的文件之前**有没有 M / ?? 标记**（说明上次会话或别处已经留了改动）。
+2. **如果目标文件已有 pre-existing 改动**（你来之前它就 M 了）：
+   - **不许直接 `git add <file>`**——`git add` 的最小颗粒是整文件，会把别人留的 hunk 一锅端走，
+     使本次 commit 包含**你没刻意挑的代码**（可能是未完成的草稿、未验证的改动，或半截 feature）。
+   - 走以下任一路：
+     - **路 A（推荐）**：先把 pre-existing 改动 `commit`（`WIP: ...` 也行）或 `stash` 出去，
+       让工作区变干净，再做你自己的活，再 commit。
+     - **路 B（要硬上）**：把目标 hunks 写到 `.patch` 文件，用 `git apply --cached <patch>`
+       只 stage 自己的 hunks。`git add -p` 因为是交互式的不能用。
+3. **commit 前必须看一眼 `git diff --cached`**——验证**真正**要进 commit 的 diff 就是你这次干的活，
+   多一行少一行都得说得清。
+4. **会话结束前要留干净工作区**——所有 M / ?? 要么 commit（含 `WIP: ...`）、要么 stash、要么
+   加 .gitignore，**不允许把混合状态文件留给下一次会话**。这是预防"下次 Claude 进来踩这条规则"
+   的源头治理。
+
+**反面教材**（这条规则的由来）：上次会话留了 4 个 uncommitted 文件（含 `main.py` 里 3 个属于
+"目录字节统计"功能的 hunk）；下次 Claude 进来改 `main.py` 修 ASMR 封面 bug，`git add backend/app/main.py`
+顺手把那 3 个无关 hunk 一起带进了"封面修复"commit（`606b377`）。后果：
+- commit 标题与内容不符（log 误导）；
+- 那 3 个 hunk 调用的 `scanner.directory_size()` 函数定义还在未提交的 scanner.py 里——
+  **那个 commit 的代码快照是坏的**，`git checkout 606b377` 会 `AttributeError`；
+- "目录字节统计"功能被偷偷出货了一半，用户都没意识到。
+
+后来用 `git reset --soft HEAD~1` + 手动剔除 hunk + 重新 commit（`3a672ed`）才修复，完整复盘
+见本会话历史（5/24）。
+
 ## 跑 / 构建 / 测试
 
 - **Web 栈启动**：两个脚本，逻辑都在 `he.ps1`。
