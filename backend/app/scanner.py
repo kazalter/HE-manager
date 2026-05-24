@@ -29,6 +29,24 @@ SKIP_FOLDERS = {'mask', 'result', 'inpainted', '.thumbnails', 'node_modules', '.
 # Global lock for video thumbnail generation to limit concurrency to 1
 THUMBNAIL_LOCK = threading.Lock()
 
+
+def directory_size(root: str) -> int:
+    """Sum of file sizes under `root`, recursively, in bytes.
+
+    Used for folder-form media (manga pages, ASMR audio works) where the
+    Media row represents a directory rather than a single file. Best-effort:
+    unreadable / vanished entries are silently skipped so a transient FS
+    error during scan doesn't tank a whole batch.
+    """
+    total = 0
+    for dirpath, _, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                continue
+    return total
+
 def is_valid_frame(frame, max_width=512):
     """
     Checks if a frame is 'valid' for a thumbnail (not black/white, not pure color, not too blurry).
@@ -492,7 +510,8 @@ def scan_folder(folder_id: int):
                                 page_count = count_manga_pages(root, ".dir")
                                 media = models.Media(
                                     folder_id=folder.id, title=title, relative_path=rel_path,
-                                    absolute_path=root, media_type='manga', extension='.dir', file_size=0,
+                                    absolute_path=root, media_type='manga', extension='.dir',
+                                    file_size=directory_size(root),
                                     page_count=page_count, is_missing=False
                                 )
                                 thumb_name = f"thumb_dir_{media.title}_{datetime.now().timestamp()}.jpg"
@@ -572,7 +591,7 @@ def scan_folder(folder_id: int):
                                 absolute_path=root,
                                 media_type='audio',
                                 extension='.dir',
-                                file_size=0,
+                                file_size=directory_size(root),
                                 page_count=track_count,
                                 duration=total_duration,
                                 source_url=source_url,

@@ -107,6 +107,83 @@ const statusLabel: Record<string, string> = {
   viewed: '已看',
 }
 
+// ---- donut chart helper ----
+// One slice color per semantic key — the same media type uses the same
+// color across every donut on the page, which is the whole point of moving
+// off bars (eyes pick out "video" instantly).
+const SLICE_COLORS: Record<string, string> = {
+  // media types
+  video: '#60a5fa',   // blue-400
+  manga: '#a78bfa',   // violet-400
+  image: '#34d399',   // emerald-400
+  audio: '#fbbf24',   // amber-400
+  // sources
+  x: '#60a5fa',       // X reuses the video blue — coincidence, looks fine
+  wnacg: '#f472b6',   // pink-400
+  local: '#94a3b8',   // slate-400
+  asmr: '#fbbf24',
+  // view status (left→right = progression)
+  unviewed: '#64748b', // slate-500
+  viewing: '#a78bfa',  // violet-400
+  viewed: '#34d399',   // emerald-400
+}
+const FALLBACK_COLOR = '#94a3b8'
+
+interface DonutSliceInput {
+  key: string
+  label: string
+  count: number          // numeric magnitude for arc math
+  to?: string | null     // optional click-through (legend item becomes a link)
+  valueLabel?: string    // legend display override (e.g. formatted bytes)
+}
+
+interface DonutSlice extends DonutSliceInput {
+  color: string
+  pct: number
+  dasharray: string
+  dashoffset: string
+}
+
+interface DonutData {
+  slices: DonutSlice[]
+  total: number
+  totalLabel: string
+  circumference: number
+}
+
+const DONUT_RADIUS = 40
+const DONUT_CIRCUMFERENCE = 2 * Math.PI * DONUT_RADIUS
+
+// Build arc dasharrays from a list of slices. We draw each slice as a full
+// stroked circle with a dash pattern that exposes just its arc, offset by the
+// cumulative arc length of the slices before it. The whole SVG is rotated
+// -90deg in CSS so the first slice starts at 12 o'clock.
+const buildDonut = (entries: DonutSliceInput[], totalLabel?: string): DonutData => {
+  const visible = entries.filter(e => e.count > 0)
+  const total = visible.reduce((s, e) => s + e.count, 0)
+  const C = DONUT_CIRCUMFERENCE
+  let cumulative = 0
+  const slices: DonutSlice[] = visible.map(e => {
+    const ratio = total > 0 ? e.count / total : 0
+    const len = ratio * C
+    const slice: DonutSlice = {
+      ...e,
+      color: SLICE_COLORS[e.key] ?? FALLBACK_COLOR,
+      pct: Math.round(ratio * 100),
+      dasharray: `${len.toFixed(3)} ${(C - len).toFixed(3)}`,
+      dashoffset: (-cumulative).toFixed(3),
+    }
+    cumulative += len
+    return slice
+  })
+  return {
+    slices,
+    total,
+    totalLabel: totalLabel ?? total.toLocaleString(),
+    circumference: C,
+  }
+}
+
 // ---- overview derived ----
 const overviewCards = computed(() => {
   const o = overview.value
@@ -121,49 +198,45 @@ const overviewCards = computed(() => {
   ]
 })
 
-const typeBars = computed(() => {
+const typeDonut = computed<DonutData | null>(() => {
   const o = overview.value
-  if (!o) return []
-  const max = Math.max(1, ...Object.values(o.by_type))
-  return Object.entries(o.by_type).map(([key, count]) => ({
+  if (!o) return null
+  const entries: DonutSliceInput[] = Object.entries(o.by_type).map(([key, count]) => ({
     key,
     label: typeMeta[key]?.label ?? key,
-    icon: typeMeta[key]?.icon ?? ImageIcon,
     count,
-    pct: Math.round((count / max) * 100),
     to: `/type/${key}`,
   }))
+  return buildDonut(entries)
 })
 
-// "Where is my space going" — sorted by size desc, with each type's GB and share.
-const typeSizeBars = computed(() => {
+// "Where is my space going" — slices sized by raw bytes; legend shows GB + share.
+const typeSizeDonut = computed<DonutData | null>(() => {
   const o = overview.value
-  if (!o) return []
-  const totalSize = Math.max(1, o.total_size_bytes)
-  return Object.entries(o.by_type_size)
+  if (!o) return null
+  const entries: DonutSliceInput[] = Object.entries(o.by_type_size)
     .filter(([, bytes]) => bytes > 0)
     .sort((a, b) => b[1] - a[1])
     .map(([key, bytes]) => ({
       key,
       label: typeMeta[key]?.label ?? key,
-      icon: typeMeta[key]?.icon ?? ImageIcon,
-      bytes,
-      size: formatSize(bytes),
-      pct: Math.round((bytes / totalSize) * 100),
+      count: bytes,
+      valueLabel: formatSize(bytes),
       to: `/type/${key}`,
     }))
+  return buildDonut(entries, formatSize(o.total_size_bytes))
 })
 
-const statusBars = computed(() => {
+const statusDonut = computed<DonutData | null>(() => {
   const o = overview.value
-  if (!o) return []
-  const total = Math.max(1, o.total)
-  return Object.entries(o.view_status).map(([key, count]) => ({
+  if (!o) return null
+  const entries: DonutSliceInput[] = Object.entries(o.view_status).map(([key, count]) => ({
     key,
     label: statusLabel[key] ?? key,
     count,
-    pct: Math.round((count / total) * 100),
+    to: null,  // HomeView doesn't filter by view_status via URL; legend stays inert
   }))
+  return buildDonut(entries)
 })
 
 const ratingBars = computed(() => {
@@ -178,18 +251,36 @@ const ratingBars = computed(() => {
   }))
 })
 
-const sourceBars = computed(() => {
+const sourceDonut = computed<DonutData | null>(() => {
   const d = distribution.value
-  if (!d) return []
-  const entries = Object.entries(d.by_source)
-  const max = Math.max(1, ...entries.map(([, c]) => c))
-  return entries.map(([key, count]) => ({
+  if (!d) return null
+  const entries: DonutSliceInput[] = Object.entries(d.by_source).map(([key, count]) => ({
     key,
     label: sourceLabel(key),
     count,
-    pct: Math.round((count / max) * 100),
     to: sourceLinkable(key) ? `/?source=${key}` : null,
   }))
+  return buildDonut(entries)
+})
+
+// Aggregate the four donuts into a single iterable so the template stays
+// short. Empty donuts (e.g. no audio yet) are filtered out so we don't
+// render half-empty cards.
+const donutCards = computed(() => {
+  const out: { title: string; centerLabel: string; donut: DonutData }[] = []
+  if (typeDonut.value && typeDonut.value.slices.length) {
+    out.push({ title: '媒体类型（数量）', centerLabel: '总数', donut: typeDonut.value })
+  }
+  if (typeSizeDonut.value && typeSizeDonut.value.slices.length) {
+    out.push({ title: '媒体类型（占用空间）', centerLabel: '总体积', donut: typeSizeDonut.value })
+  }
+  if (statusDonut.value && statusDonut.value.slices.length) {
+    out.push({ title: '观看状态', centerLabel: '总数', donut: statusDonut.value })
+  }
+  if (sourceDonut.value && sourceDonut.value.slices.length) {
+    out.push({ title: '来源占比', centerLabel: '总数', donut: sourceDonut.value })
+  }
+  return out
 })
 
 // ---- growth: monthly bars + cumulative line ----
@@ -386,102 +477,92 @@ const lastOpenedText = (item: StatAttentionItem) => {
         </component>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <!-- by type (count + size) -->
-        <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
-          <h2 class="text-sm font-bold text-white/80 mb-4">按类型（数量）</h2>
-          <div class="space-y-3">
-            <RouterLink
-              v-for="b in typeBars"
-              :key="b.key"
-              :to="b.to"
-              class="block group"
-            >
-              <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="flex items-center gap-2 text-white/70 group-hover:text-white transition-colors">
-                  <component :is="b.icon" :size="15" class="text-accent" />{{ b.label }}
-                </span>
-                <span class="text-white/50 tabular-nums">{{ b.count.toLocaleString() }}</span>
-              </div>
-              <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-accent transition-all duration-500" :style="{ width: b.pct + '%' }" />
-              </div>
-            </RouterLink>
-          </div>
-
-          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">按类型（占用空间）</h2>
-          <div v-if="typeSizeBars.length" class="space-y-3">
-            <RouterLink
-              v-for="b in typeSizeBars"
-              :key="b.key"
-              :to="b.to"
-              class="block group"
-            >
-              <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="flex items-center gap-2 text-white/70 group-hover:text-white transition-colors">
-                  <component :is="b.icon" :size="15" class="text-accent" />{{ b.label }}
-                </span>
-                <span class="text-white/50 tabular-nums">{{ b.size }} · {{ b.pct }}%</span>
-              </div>
-              <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-accent/80 transition-all duration-500" :style="{ width: b.pct + '%' }" />
-              </div>
-            </RouterLink>
-          </div>
-          <div v-else class="text-white/40 text-xs py-2">暂无可统计的体积信息。</div>
-        </section>
-
-        <!-- rating + status + source -->
-        <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
-          <h2 class="text-sm font-bold text-white/80 mb-4">评分分布</h2>
-          <div class="space-y-2.5">
-            <div v-for="r in ratingBars" :key="r.stars" class="flex items-center gap-3">
-              <span class="flex items-center gap-0.5 w-20 shrink-0 text-amber-300/90">
-                <template v-if="r.stars > 0">
-                  <Star v-for="n in r.stars" :key="n" :size="11" fill="currentColor" />
-                </template>
-                <span v-else class="text-white/40 text-xs">未评分</span>
-              </span>
-              <div class="flex-1 h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-amber-400/70 transition-all duration-500" :style="{ width: r.pct + '%' }" />
-              </div>
-              <span class="w-14 text-right text-white/50 text-sm tabular-nums">{{ r.count.toLocaleString() }}</span>
-            </div>
-          </div>
-
-          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">观看状态</h2>
-          <div class="space-y-3">
-            <div v-for="b in statusBars" :key="b.key">
-              <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="text-white/70">{{ b.label }}</span>
-                <span class="text-white/50 tabular-nums">{{ b.count.toLocaleString() }} · {{ b.pct }}%</span>
-              </div>
-              <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-accent/70 transition-all duration-500" :style="{ width: b.pct + '%' }" />
+      <!-- four donut cards: type-count / type-size / status / source -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <section
+          v-for="card in donutCards"
+          :key="card.title"
+          class="rounded-2xl p-5 bg-white/[0.03] border border-white/10"
+        >
+          <h2 class="text-sm font-bold text-white/80 mb-4">{{ card.title }}</h2>
+          <div class="flex items-center gap-5">
+            <!-- Donut: stroked circles with computed dasharrays form arc slices.
+                 Rotated -90deg so the first slice starts at 12 o'clock. -->
+            <div class="relative w-[128px] h-[128px] shrink-0">
+              <svg viewBox="0 0 100 100" class="w-full h-full -rotate-90">
+                <circle
+                  cx="50" cy="50" r="40"
+                  fill="none"
+                  stroke="rgba(255,255,255,0.06)"
+                  stroke-width="14"
+                />
+                <circle
+                  v-for="s in card.donut.slices"
+                  :key="s.key"
+                  cx="50" cy="50" r="40"
+                  fill="none"
+                  stroke-width="14"
+                  stroke-linecap="butt"
+                  :stroke="s.color"
+                  :stroke-dasharray="s.dasharray"
+                  :stroke-dashoffset="s.dashoffset"
+                  class="transition-all duration-500"
+                >
+                  <title>{{ s.label }}：{{ s.valueLabel ?? s.count.toLocaleString() }} · {{ s.pct }}%</title>
+                </circle>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <div class="text-lg font-black text-white leading-none">{{ card.donut.totalLabel }}</div>
+                <div class="text-[10px] text-white/40 mt-1">{{ card.centerLabel }}</div>
               </div>
             </div>
-          </div>
-
-          <h2 class="text-sm font-bold text-white/80 mt-6 mb-4">来源占比</h2>
-          <div class="space-y-3">
-            <component
-              :is="s.to ? RouterLink : 'div'"
-              v-for="s in sourceBars"
-              :key="s.key"
-              :to="s.to ?? undefined"
-              class="block group"
-            >
-              <div class="flex items-center justify-between text-sm mb-1.5">
-                <span class="text-white/70 group-hover:text-white transition-colors">{{ s.label }}</span>
-                <span class="text-white/50 tabular-nums">{{ s.count.toLocaleString() }}</span>
-              </div>
-              <div class="h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
-                <div class="h-full rounded-full bg-accent/60 transition-all duration-500" :style="{ width: s.pct + '%' }" />
-              </div>
-            </component>
+            <!-- Legend. Each row is a RouterLink if the slice has a click-through. -->
+            <ul class="flex-1 space-y-2 min-w-0">
+              <li v-for="s in card.donut.slices" :key="s.key">
+                <component
+                  :is="s.to ? RouterLink : 'div'"
+                  :to="s.to ?? undefined"
+                  class="flex items-center gap-2.5 text-sm group"
+                >
+                  <span
+                    class="w-2.5 h-2.5 rounded-full shrink-0"
+                    :style="{ backgroundColor: s.color }"
+                  />
+                  <span
+                    class="text-white/75 truncate"
+                    :class="s.to ? 'group-hover:text-white' : ''"
+                  >
+                    {{ s.label }}
+                  </span>
+                  <span class="ml-auto text-white/50 tabular-nums shrink-0 text-xs">
+                    {{ s.valueLabel ?? s.count.toLocaleString() }}
+                    <span class="text-white/35">· {{ s.pct }}%</span>
+                  </span>
+                </component>
+              </li>
+            </ul>
           </div>
         </section>
       </div>
+
+      <!-- rating: histogram stays as bars (it's a distribution, not a part-of-whole) -->
+      <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">
+        <h2 class="text-sm font-bold text-white/80 mb-4">评分分布</h2>
+        <div class="space-y-2.5">
+          <div v-for="r in ratingBars" :key="r.stars" class="flex items-center gap-3">
+            <span class="flex items-center gap-0.5 w-20 shrink-0 text-amber-300/90">
+              <template v-if="r.stars > 0">
+                <Star v-for="n in r.stars" :key="n" :size="11" fill="currentColor" />
+              </template>
+              <span v-else class="text-white/40 text-xs">未评分</span>
+            </span>
+            <div class="flex-1 h-2.5 rounded-full bg-white/[0.05] overflow-hidden">
+              <div class="h-full rounded-full bg-amber-400/70 transition-all duration-500" :style="{ width: r.pct + '%' }" />
+            </div>
+            <span class="w-14 text-right text-white/50 text-sm tabular-nums">{{ r.count.toLocaleString() }}</span>
+          </div>
+        </div>
+      </section>
 
       <!-- library growth: monthly bars + cumulative line -->
       <section class="rounded-2xl p-5 bg-white/[0.03] border border-white/10">

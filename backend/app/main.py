@@ -716,6 +716,7 @@ def upsert_external_downloaded_media(
     folder = ensure_external_manga_library(source, download_root_path, db)
     page_count = scanner.count_manga_pages(item_dir, ".dir")
     rel_path = os.path.relpath(item_dir, folder.path)
+    total_bytes = scanner.directory_size(item_dir)
 
     media = (
         db.query(models.Media)
@@ -726,7 +727,7 @@ def upsert_external_downloaded_media(
         media.folder_id = folder.id
         media.title = item.title
         media.relative_path = rel_path
-        media.file_size = 0
+        media.file_size = total_bytes
         media.page_count = page_count
         media.source_url = item.url
         media.source_site = source.source_type
@@ -739,7 +740,7 @@ def upsert_external_downloaded_media(
             absolute_path=item_dir,
             media_type="manga",
             extension=".dir",
-            file_size=0,
+            file_size=total_bytes,
             page_count=page_count,
             source_url=item.url,
             source_site=source.source_type,
