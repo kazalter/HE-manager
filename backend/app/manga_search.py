@@ -73,15 +73,32 @@ _LATIN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_+\-]*")
 
 # Tokens that show up as filler in free-form queries. Stripped before
 # scoring so they don't drag IDF down or produce noise hits.
+#
+# Includes:
+#   - Verbs / fillers      ("想看", "推荐", ...)
+#   - Generic catalog nouns ("漫画", "作品", "类型", ...)
+#   - Pronouns / determiners that latch onto everything ("我", "他", "她",
+#     "这个", "那个", "你") — without these, queries like "我想看作者X的作品"
+#     match every manga whose title contains "我".
+#   - Structural meta words ("作者", "画师", "画家") that the user uses to
+#     *name* the slot they care about, not as a content word.
 _STOPWORDS: frozenset[str] = frozenset({
-    # zh
-    "想看", "想要", "推荐", "漫画", "作品", "一点", "一些", "看看", "求", "的", "了",
-    "请", "帮我", "找", "类似", "类型",
-    # ja (very common kana fillers)
-    "おすすめ", "好き",
+    # zh — verbs / fillers
+    "想看", "想要", "推荐", "一点", "一些", "看看", "求", "的", "了",
+    "请", "帮我", "找", "类似", "类型", "看", "想", "有", "没有", "是",
+    # zh — generic catalog nouns
+    "漫画", "作品", "本子", "本", "图", "图片", "图集", "故事",
+    # zh — meta slot names (NOT content)
+    "作者", "画师", "画家", "社团", "标签",
+    # zh — pronouns / determiners
+    "我", "你", "他", "她", "它", "这", "那", "这个", "那个", "这种", "那种",
+    "哪", "哪个", "什么", "怎么", "谁",
+    # ja — very common fillers
+    "おすすめ", "好き", "もの", "こと",
     # en
-    "want", "like", "recommend", "manga", "comic", "want", "find", "show",
+    "want", "like", "recommend", "manga", "comic", "find", "show",
     "please", "give", "looking",
+    "i", "me", "my", "you", "the", "a", "an", "of", "for", "with",
 })
 
 

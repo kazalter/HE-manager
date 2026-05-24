@@ -177,7 +177,13 @@ class RecommendationTest(unittest.TestCase):
         return media
 
     def test_tag_match_beats_unrelated_high_rating(self):
-        """A query token hitting a tag should outrank a 5-star manga with no tag link."""
+        """A query token hitting a tag should outrank a 5-star manga with no tag link.
+
+        Also verifies that under a specific query, unrelated high-rated items
+        are *excluded* — we no longer pad the result list with zero-relevance
+        picks just to hit `limit`. The 5-star "战斗" manga doesn't share any
+        token with "治愈" so it should not appear at all.
+        """
         db = self.Session()
         try:
             folder = models.Folder(path="D:\\Manga", scan_mode="manga")
@@ -195,7 +201,8 @@ class RecommendationTest(unittest.TestCase):
             )
             order = [item["media"].id for item in result["recommendations"]]
             self.assertEqual(order[0], relevant.id, "tag-relevant manga must come first")
-            self.assertIn(unrelated_star.id, order)
+            self.assertNotIn(unrelated_star.id, order,
+                             "unrelated high-rated manga must not pad the list")
         finally:
             db.close()
 
@@ -282,6 +289,54 @@ class RecommendationTest(unittest.TestCase):
             )
             order = [item["media"].id for item in result["recommendations"]]
             self.assertLess(order.index(fresh.id), order.index(seen.id))
+        finally:
+            db.close()
+
+    def test_empty_result_when_no_field_matches_query(self):
+        """Query tokens hit no field → return [] + an explanatory message.
+
+        Old bug: 'I want mignon's works' would return noise because the system
+        fell back to high-rated manga even though nothing matched the actual ask.
+        """
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            self._make_manga(db, folder, "完全不相关的标题", tags=["短篇"], rating=5)
+            db.add(folder)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="想看作者zzzzzzz9999的作品",
+                limit=5,
+                avoid_tags=[],
+                preferred_tags=["zzzzzzz9999"],  # force a positive_term that won't match
+            )
+            self.assertEqual(result["recommendations"], [])
+            self.assertIsNotNone(result["message"])
+            self.assertIn("zzzzzzz9999", result["message"])
+        finally:
+            db.close()
+
+    def test_browse_mode_when_no_positive_terms(self):
+        """No positive tokens at all → fall through to rating-based browse, not empty."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            self._make_manga(db, folder, "高评分的作品", rating=5)
+            self._make_manga(db, folder, "低评分的作品", rating=1)
+            db.add(folder)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="推荐一些作品",  # all stopwords after tokenize → no positive tokens
+                limit=5,
+                avoid_tags=[],
+                preferred_tags=[],
+            )
+            self.assertGreater(len(result["recommendations"]), 0,
+                               "browse mode must still return something")
         finally:
             db.close()
 

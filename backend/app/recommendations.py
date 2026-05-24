@@ -93,16 +93,37 @@ def parse_preferences(query: str, avoid_tags: Iterable[str], preferred_tags: Ite
         return fallback, False, "未配置 DEEPSEEK_API_KEY，已使用本地规则推荐。"
 
     system = (
-        "你是本地漫画库的偏好解析器。只输出 JSON，不输出解释。"
+        "你是本地漫画库的偏好解析器，把用户自然语言查询拆成结构化偏好。"
+        "只输出 JSON，不输出解释。"
+        "\n\n"
+        "硬规则："
+        "\n1) positive_terms 是单个**实质内容词**列表（作者名 / 题材 / 画风 / 氛围 / 系列 / 原作），"
+        "不要塞整句话，不要带'作者'、'画师'、'我'、'想看'这类结构词。"
+        "\n2) 作者/画师名要单独拆出来，不要黏在前缀上。"
+        "\n3) 拒绝意图的词进 avoid_terms。"
+        "\n4) length 必须是 short / medium / long / any 之一。"
+        "\n\n"
+        "示例：\n"
+        "Q: 我想看作者mignon的作品\n"
+        "A: {\"positive_terms\": [\"mignon\"], \"avoid_terms\": [], \"tone\": [], \"length\": \"any\"}\n"
+        "\n"
+        "Q: 画师ぽるのいぶき的本子，不要黑暗\n"
+        "A: {\"positive_terms\": [\"ぽるのいぶき\"], \"avoid_terms\": [\"黑暗\"], \"tone\": [], \"length\": \"any\"}\n"
+        "\n"
+        "Q: 想看治愈系短篇，画风精细一点\n"
+        "A: {\"positive_terms\": [\"治愈\"], \"avoid_terms\": [], \"tone\": [\"画风精细\"], \"length\": \"short\"}\n"
+        "\n"
+        "Q: 类似[Circle (Artist)]那种感觉的长篇剧情向\n"
+        "A: {\"positive_terms\": [\"Artist\"], \"avoid_terms\": [], \"tone\": [\"剧情\"], \"length\": \"long\"}\n"
     )
     user = {
         "query": query,
         "avoid_tags": list(avoid_tags),
         "preferred_tags": list(preferred_tags),
         "schema": {
-            "positive_terms": ["用户想要的题材、画风、作者、系列、氛围关键词"],
+            "positive_terms": ["实质内容词，单个拆开"],
             "avoid_terms": ["用户明确不想要的内容"],
-            "tone": ["轻松", "剧情", "画风精细"],
+            "tone": ["氛围/画风/节奏描述"],
             "length": "short | medium | long | any",
         },
     }
@@ -411,6 +432,27 @@ def recommend_manga(
 
     # Two-key sort: text-score first (so query relevance wins), prior as tiebreak.
     scored.sort(key=lambda item: (item["text_score"], item["score"]), reverse=True)
+
+    # When the user provided concrete content terms, only show items that
+    # actually matched at least one of them. Otherwise (browse mode), keep the
+    # full pool ranked by prior. This prevents padding the result list with
+    # zero-relevance high-rated picks when only a few real matches exist.
+    if positive_tokens:
+        matched_pool = [item for item in scored if item["text_score"] > 0]
+        if not matched_pool:
+            terms = ", ".join(_as_list(preferences.get("positive_terms"))[:3]) or query
+            return {
+                "recommendations": [],
+                "parsed_preferences": preferences,
+                "ai_enabled": ai_enabled,
+                "candidate_count": len(scored),
+                "message": (
+                    f"未在 manga 库中找到与「{terms}」相关的条目。"
+                    "可能这本不在库里，或作者名拼写不一致。"
+                    "也试试换关键词、或浏览其它作品。"
+                ),
+            }
+        scored = matched_pool
 
     ai_reasons, ai_message = ai_rank_and_explain(query, scored, limit)
     if ai_message and not message:

@@ -41,7 +41,9 @@ _META_TAGS = {
 _DATE_BRACKET = re.compile(r"^\d{4}[.\-_/]\d{1,2}([.\-_/]\d{1,2})?$")
 
 _EVENT_PREFIX = re.compile(r"^\s*[（(][^（）()]*[）)]\s*")
-_LEADING_BRACKET = re.compile(r"^\s*[［\[]([^［\]\[］]+)[］\]]\s*")
+# Accept ASCII [...], full-width ［...］ and Chinese 【...】 — all three show up
+# in real titles (jp doujin, cn fanbox dumps).
+_LEADING_BRACKET = re.compile(r"^\s*[［\[【]([^［\]\[］【】]+)[］\]】]\s*")
 # "Circle (Artist)" — the artist is the trailing parenthesised group.
 _CIRCLE_ARTIST = re.compile(r"^(?P<circle>.+?)\s*[（(](?P<artist>[^（）()]+)[）)]\s*$")
 
