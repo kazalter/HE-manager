@@ -6,7 +6,7 @@ from PIL import Image
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import ai_config, manga_metadata, manga_profiles, models, recommendations
+from app import ai_config, manga_metadata, manga_profiles, manga_search, models, recommendations
 
 
 class RecommendationTest(unittest.TestCase):
@@ -23,6 +23,7 @@ class RecommendationTest(unittest.TestCase):
         self._config_tmp = tempfile.TemporaryDirectory()
         ai_config.CONFIG_DIR = self._config_tmp.name
         ai_config.CONFIG_PATH = os.path.join(self._config_tmp.name, "deepseek.json")
+        self._tag_cache = {}
 
     def tearDown(self):
         ai_config.CONFIG_DIR = self._old_config_dir
@@ -130,6 +131,171 @@ class RecommendationTest(unittest.TestCase):
                 self.assertIn("aggregate", manga_profiles.json_loads(profile.visual_features, {}))
         finally:
             db.close()
+
+    def _tag(self, db, name):
+        """Get-or-create with a session-scoped cache (db.autoflush=False here)."""
+        cache = getattr(self, "_tag_cache", None)
+        if cache is None:
+            cache = {}
+            self._tag_cache = cache
+        if name in cache:
+            return cache[name]
+        tag = models.Tag(name=name)
+        db.add(tag)
+        cache[name] = tag
+        return tag
+
+    def _make_manga(
+        self,
+        db,
+        folder,
+        title,
+        *,
+        tags=(),
+        artist=None,
+        rating=0,
+        favorite=False,
+        view_status="unviewed",
+        page_count=24,
+    ):
+        media = models.Media(
+            folder=folder,
+            title=title,
+            relative_path=f"{title}.cbz",
+            absolute_path=f"D:\\Manga\\{title}.cbz",
+            media_type="manga",
+            extension=".cbz",
+            file_size=1024,
+            page_count=page_count,
+            rating=rating,
+            favorite=favorite,
+            view_status=view_status,
+            artist=artist,
+        )
+        for tag_name in tags:
+            media.tags.append(self._tag(db, tag_name))
+        return media
+
+    def test_tag_match_beats_unrelated_high_rating(self):
+        """A query token hitting a tag should outrank a 5-star manga with no tag link."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            relevant = self._make_manga(db, folder, "无标签匹配的故事", tags=["治愈"], rating=2)
+            unrelated_star = self._make_manga(db, folder, "完全无关的高分作", tags=["战斗"], rating=5)
+            db.add(folder)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="想看治愈系",
+                limit=5,
+                avoid_tags=[],
+                preferred_tags=[],
+            )
+            order = [item["media"].id for item in result["recommendations"]]
+            self.assertEqual(order[0], relevant.id, "tag-relevant manga must come first")
+            self.assertIn(unrelated_star.id, order)
+        finally:
+            db.close()
+
+    def test_artist_diversity_cap_limits_repeats(self):
+        """Same artist should not flood the result list."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            for i in range(5):
+                self._make_manga(
+                    db, folder, f"治愈短篇{i}", tags=["治愈", "短篇"],
+                    artist="同一作者", rating=5,
+                )
+            self._make_manga(db, folder, "另一作者的治愈作", tags=["治愈"], artist="别的作者", rating=3)
+            db.add(folder)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="想看治愈短篇",
+                limit=8,
+                avoid_tags=[],
+                preferred_tags=[],
+            )
+            artists = [item["media"].artist for item in result["recommendations"]]
+            self.assertLessEqual(artists.count("同一作者"), recommendations.ARTIST_DIVERSITY_CAP)
+            self.assertIn("别的作者", artists)
+        finally:
+            db.close()
+
+    def test_avoid_terms_do_not_match_on_summary_text(self):
+        """Old bug: avoid='黑暗' filtered out manga whose AI summary mentioned the word.
+
+        The new logic only consults tag/meta_tag/parody/artist/title, so a summary
+        containing the avoid term must NOT cause filtering.
+        """
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            media = self._make_manga(db, folder, "明亮温暖的故事", tags=["治愈"], rating=4)
+            db.add(folder)
+            db.commit()
+            # Simulate an AI profile whose summary happens to contain '黑暗'
+            profile = models.MangaAIProfile(
+                media=media,
+                content_summary="画面明亮，与常见的黑暗题材完全相反",
+                style_tags="[]", story_tags="[]", tone_tags="[]",
+                recommendation_keywords="[]",
+            )
+            db.add(profile)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="温暖的故事",
+                limit=5,
+                avoid_tags=["黑暗"],
+                preferred_tags=[],
+            )
+            ids = [item["media"].id for item in result["recommendations"]]
+            self.assertIn(media.id, ids, "avoid term in summary should NOT filter the manga")
+        finally:
+            db.close()
+
+    def test_viewed_penalty_demotes_already_read(self):
+        """Two similar mangas; the unread one should rank above the viewed one."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            fresh = self._make_manga(db, folder, "没看过的治愈短篇", tags=["治愈", "短篇"], rating=3)
+            seen = self._make_manga(
+                db, folder, "已读过的治愈短篇", tags=["治愈", "短篇"],
+                rating=3, view_status="viewed",
+            )
+            db.add(folder)
+            db.commit()
+
+            result = recommendations.recommend_manga(
+                db=db,
+                query="治愈短篇",
+                limit=5,
+                avoid_tags=[],
+                preferred_tags=[],
+            )
+            order = [item["media"].id for item in result["recommendations"]]
+            self.assertLess(order.index(fresh.id), order.index(seen.id))
+        finally:
+            db.close()
+
+    def test_tokenize_handles_chinese_and_latin(self):
+        toks = set(manga_search.tokenize("治愈系 short story 黑暗"))
+        # CJK fallback path produces both unigrams and bigrams; jieba path produces words.
+        # Either way, the substantive words should be present somehow.
+        self.assertTrue(any("治愈" in t for t in toks) or "治" in toks)
+        self.assertIn("short", toks)
+        self.assertIn("story", toks)
+        self.assertTrue(any("黑暗" in t for t in toks) or "黑" in toks)
+        # 1-char Latin and stopwords are dropped
+        self.assertNotIn("a", toks)
+        self.assertNotIn("想看", toks)
 
     def test_manga_metadata_profile_parses_title_and_source_item(self):
         db = self.Session()

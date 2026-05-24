@@ -6,7 +6,7 @@ from urllib.request import Request, urlopen
 
 from sqlalchemy.orm import Session
 
-from . import ai_config, models
+from . import ai_config, manga_search, models
 
 HIDDEN_DUPLICATE_STATUSES = {"checking", "strong_duplicate", "suspected_duplicate"}
 
@@ -153,38 +153,7 @@ def _heuristic_preferences(query: str, avoid_tags: Iterable[str], preferred_tags
     }
 
 
-def _text_blob(media: models.Media) -> str:
-    tag_names = " ".join(tag.name for tag in media.tags)
-    profile = media.ai_profile
-    profile_text = ""
-    if profile:
-        profile_text = " ".join(
-            [
-                profile.content_summary or "",
-                profile.style_tags or "",
-                profile.story_tags or "",
-                profile.tone_tags or "",
-                profile.recommendation_keywords or "",
-                profile.ocr_text or "",
-            ]
-        )
-    metadata = media.metadata_profile
-    metadata_text = ""
-    if metadata:
-        metadata_text = " ".join(
-            [
-                metadata.parsed_title or "",
-                metadata.parsed_artist or "",
-                metadata.parody or "",
-                metadata.language or "",
-                metadata.external_tags or "",
-                metadata.external_summary or "",
-            ]
-        )
-    return f"{media.title or ''} {media.artist or ''} {tag_names} {profile_text} {metadata_text}".lower()
-
-
-def _profile_list(value: str | None) -> list[str]:
+def _profile_list(value: Optional[str]) -> list[str]:
     if not value:
         return []
     try:
@@ -196,111 +165,69 @@ def _profile_list(value: str | None) -> list[str]:
     return [str(item) for item in parsed if str(item).strip()]
 
 
-def _profile_keywords(media: models.Media) -> list[str]:
-    profile = media.ai_profile
-    if not profile:
-        return []
-    keywords = []
-    for value in [profile.style_tags, profile.story_tags, profile.tone_tags, profile.recommendation_keywords]:
-        keywords.extend(_profile_list(value))
-    metadata = media.metadata_profile
-    if metadata:
-        keywords.extend(_profile_list(metadata.external_tags))
-        for value in [metadata.parsed_artist, metadata.parody, metadata.language]:
-            if value:
-                keywords.append(value)
-    return _dedupe(keywords)
+# --- Static priors (non-text signals) --------------------------------------
+
+# Weights for non-text features. Tuned so a tag-relevant manga can outrank
+# a high-rated but irrelevant one, while a favorite/high-rating still wins
+# when nothing else differentiates.
+RATING_WEIGHT = 10.0
+FAVORITE_BONUS = 18.0
+VIEWED_PENALTY = -20.0
+VIEWING_PENALTY = -5.0
+LENGTH_BONUS = 8.0
+LENGTH_MEDIUM_BONUS = 6.0
+ARTIST_DIVERSITY_CAP = 2
+AI_RERANK_POOL = 60  # how many top-scored candidates DeepSeek gets to reorder
 
 
-# (removed — personal media library, no content restrictions)
-
-
-def _is_cjk(ch: str) -> bool:
-    return "぀" <= ch <= "ヿ" or "㐀" <= ch <= "鿿"
-
-
-def _avoid_term_usable(term: str) -> bool:
-    """Skip too-short avoid terms so a single letter doesn't nuke the library.
-
-    CJK terms: require ≥ 2 chars. Latin terms: require ≥ 3 chars.
-    """
-    term = term.strip()
-    if not term:
-        return False
-    if any(_is_cjk(ch) for ch in term):
-        return len(term) >= 2
-    return len(term) >= 3
-
-
-def _matches_any(blob: str, terms: Iterable[str]) -> bool:
-    return any(_avoid_term_usable(term) and term.lower() in blob for term in terms)
-
-
-def media_candidates(db: Session, avoid_terms: Iterable[str]) -> list[models.Media]:
-    rows = (
-        db.query(models.Media)
-        .filter(
-            models.Media.media_type == "manga",
-            models.Media.is_missing == False,  # noqa: E712
-            models.Media.duplicate_status.notin_(list(HIDDEN_DUPLICATE_STATUSES)),
-        )
-        .order_by(models.Media.rating.desc(), models.Media.favorite.desc(), models.Media.id.desc())
-        .all()
-    )
-
-    candidates = []
-    for media in rows:
-        blob = _text_blob(media)
-        if _matches_any(blob, avoid_terms):
-            continue
-        candidates.append(media)
-    return candidates
-
-
-def score_candidate(media: models.Media, preferences: dict) -> tuple[float, list[str]]:
-    positive_terms = _as_list(preferences.get("positive_terms"))
-    tag_names = [tag.name for tag in media.tags]
-    profile_keywords = _profile_keywords(media)
-    blob = _text_blob(media)
-    score = float((media.rating or 0) * 12)
+def _prior_score(media: models.Media, preferences: dict) -> float:
+    """Score components that don't depend on the query text."""
+    score = float((media.rating or 0) * RATING_WEIGHT)
     if media.favorite:
-        score += 18
+        score += FAVORITE_BONUS
     if media.view_status == "viewed":
-        score -= 8
-    if media.view_status == "viewing":
-        score -= 3
+        score += VIEWED_PENALTY
+    elif media.view_status == "viewing":
+        score += VIEWING_PENALTY
     if media.page_count:
-        if preferences.get("length") == "short" and media.page_count <= 35:
-            score += 8
-        elif preferences.get("length") == "long" and media.page_count >= 80:
-            score += 8
-        elif preferences.get("length") == "medium" and 30 <= media.page_count <= 90:
-            score += 6
-
-    matched = []
-    for term in positive_terms:
-        key = term.lower()
-        if not key:
-            continue
-        if key in blob:
-            matched.append(term)
-            if any(key in tag.name.lower() for tag in media.tags):
-                score += 18
-            elif any(key in item.lower() for item in profile_keywords):
-                score += 16
-            else:
-                score += 10
-
-    # Keep unrated libraries usable by adding a small deterministic freshness
-    # signal after preference matches.
-    score += min(media.id or 0, 5000) / 5000
-    return score, _dedupe(matched + tag_names[:3] + profile_keywords[:5])
+        length = preferences.get("length")
+        if length == "short" and media.page_count <= 35:
+            score += LENGTH_BONUS
+        elif length == "long" and media.page_count >= 80:
+            score += LENGTH_BONUS
+        elif length == "medium" and 30 <= media.page_count <= 90:
+            score += LENGTH_MEDIUM_BONUS
+    return score
 
 
-def local_reason(media: models.Media, matched_tags: list[str]) -> str:
+def _avoid_token_usable(token: str) -> bool:
+    """Filter out 1-char Latin tokens that would over-match.
+
+    Tokens come from manga_search.tokenize() which already drops 1-char Latin,
+    but DeepSeek's avoid_terms enter raw — keep this as a defence in depth.
+    """
+    token = token.strip()
+    if not token:
+        return False
+    if any("぀" <= ch <= "ヿ" or "㐀" <= ch <= "鿿" for ch in token):
+        return True
+    return len(token) >= 3
+
+
+def _query_tokens(preferences: dict, key: str) -> list[str]:
+    """Tokenize each entry in preferences[key] and flatten."""
+    out: list[str] = []
+    for term in _as_list(preferences.get(key)):
+        out.extend(manga_search.tokenize(term))
+    return _dedupe(out)
+
+
+# --- Reason synthesis ------------------------------------------------------
+
+def local_reason(media: models.Media, matched_terms: list[str]) -> str:
     bits = []
-    if matched_tags:
-        bits.append(f"匹配到 {', '.join(matched_tags[:3])}")
+    if matched_terms:
+        bits.append(f"匹配到 {', '.join(matched_terms[:3])}")
     if media.rating:
         bits.append(f"已有 {media.rating} 星评分")
     if media.favorite:
@@ -314,41 +241,51 @@ def local_reason(media: models.Media, matched_tags: list[str]) -> str:
     return "；".join(bits) + "。"
 
 
+# --- DeepSeek rerank -------------------------------------------------------
+
+def _candidate_for_llm(item: dict) -> dict:
+    media = item["media"]
+    profile = media.ai_profile
+    metadata = media.metadata_profile
+    return {
+        "id": media.id,
+        "title": media.title,
+        "artist": media.artist,
+        "tags": [tag.name for tag in media.tags[:10]],
+        "profile": {
+            "summary": (profile.content_summary or "")[:200] if profile else "",
+            "style_tags": _profile_list(profile.style_tags) if profile else [],
+            "story_tags": _profile_list(profile.story_tags) if profile else [],
+            "tone_tags": _profile_list(profile.tone_tags) if profile else [],
+            "keywords": _profile_list(profile.recommendation_keywords) if profile else [],
+        },
+        "metadata": {
+            "summary": (metadata.external_summary or "")[:160] if metadata else "",
+            "tags": _profile_list(metadata.external_tags) if metadata else [],
+            "artist": metadata.parsed_artist if metadata else "",
+            "circle": metadata.parsed_circle if metadata else "",
+            "parody": metadata.parody if metadata else "",
+            "language": metadata.language if metadata else "",
+        },
+        "rating": media.rating,
+        "favorite": media.favorite,
+        "viewed": media.view_status == "viewed",
+        "page_count": media.page_count,
+        "matched": item["matched_tags"][:8],
+        "text_score": round(float(item.get("text_score", 0)), 2),
+    }
+
+
 def ai_rank_and_explain(query: str, scored: list[dict], limit: int) -> tuple[dict[int, str], Optional[str]]:
     if not deepseek_configured() or not scored:
         return {}, None
 
-    compact_candidates = [
-        {
-            "id": item["media"].id,
-            "title": item["media"].title,
-            "artist": item["media"].artist,
-            "tags": [tag.name for tag in item["media"].tags[:8]],
-            "profile": {
-                "summary": item["media"].ai_profile.content_summary if item["media"].ai_profile else "",
-                "style_tags": _profile_list(item["media"].ai_profile.style_tags) if item["media"].ai_profile else [],
-                "story_tags": _profile_list(item["media"].ai_profile.story_tags) if item["media"].ai_profile else [],
-                "tone_tags": _profile_list(item["media"].ai_profile.tone_tags) if item["media"].ai_profile else [],
-                "keywords": _profile_list(item["media"].ai_profile.recommendation_keywords) if item["media"].ai_profile else [],
-            },
-            "metadata": {
-                "summary": item["media"].metadata_profile.external_summary if item["media"].metadata_profile else "",
-                "tags": _profile_list(item["media"].metadata_profile.external_tags) if item["media"].metadata_profile else [],
-                "artist": item["media"].metadata_profile.parsed_artist if item["media"].metadata_profile else "",
-                "parody": item["media"].metadata_profile.parody if item["media"].metadata_profile else "",
-                "language": item["media"].metadata_profile.language if item["media"].metadata_profile else "",
-                "confidence": item["media"].metadata_profile.confidence if item["media"].metadata_profile else 0,
-            },
-            "rating": item["media"].rating,
-            "favorite": item["media"].favorite,
-            "page_count": item["media"].page_count,
-            "matched": item["matched_tags"],
-        }
-        for item in scored[:40]
-    ]
+    compact_candidates = [_candidate_for_llm(item) for item in scored[:AI_RERANK_POOL]]
     system = (
-        "你是本地漫画库推荐排序器。只允许从候选 id 中选择。"
-        "推荐理由要简洁，聚焦画风、题材、篇幅、氛围、标签匹配。只输出 JSON。"
+        "你是本地漫画库推荐排序器。任务：从候选中挑出最契合 query 的若干条，"
+        "并写出简洁中文理由（≤80 字，紧扣画风/题材/篇幅/氛围/标签命中）。"
+        "硬约束：1) 只允许使用候选里出现过的 id；2) 同一个 artist 最多 2 条；"
+        "3) 已 viewed 的尽量靠后或舍弃；4) 输出严格 JSON，键名只能是 items。"
     )
     user = {
         "query": query,
@@ -363,11 +300,11 @@ def ai_rank_and_explain(query: str, scored: list[dict], limit: int) -> tuple[dic
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
             temperature=0.2,
-            max_tokens=1000,
+            max_tokens=1200,
         )
         parsed = _safe_json_object(content)
         items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
-        reasons = {}
+        reasons: dict[int, str] = {}
         for item in items:
             try:
                 media_id = int(item.get("id"))
@@ -375,39 +312,114 @@ def ai_rank_and_explain(query: str, scored: list[dict], limit: int) -> tuple[dic
                 continue
             reason = str(item.get("reason") or "").strip()
             if reason:
-                reasons[media_id] = reason[:160]
+                reasons[media_id] = reason[:200]
         return reasons, None
     except RuntimeError as exc:
         return {}, str(exc)
 
 
-def recommend_manga(db: Session, query: str, limit: int, avoid_tags: Iterable[str], preferred_tags: Iterable[str]) -> dict:
+# --- Main entry ------------------------------------------------------------
+
+def _artist_key(media: models.Media) -> str:
+    """Stable diversity key. Prefers metadata-parsed artist over the raw one."""
+    metadata = media.metadata_profile
+    if metadata and metadata.parsed_artist:
+        return metadata.parsed_artist.strip().lower()
+    if media.artist:
+        return media.artist.strip().lower()
+    return f"__media_{media.id}"
+
+
+def _apply_diversity(
+    scored: list[dict],
+    ai_reasons: dict[int, str],
+    limit: int,
+    artist_cap: int = ARTIST_DIVERSITY_CAP,
+) -> list[dict]:
+    """Take AI-reordered ids first, then fall back to local score; cap per artist."""
+    by_id = {item["media"].id: item for item in scored}
+    artist_count: dict[str, int] = {}
+    chosen: list[dict] = []
+    chosen_ids: set[int] = set()
+
+    def _try_add(item: dict) -> bool:
+        if item["media"].id in chosen_ids:
+            return False
+        key = _artist_key(item["media"])
+        if artist_count.get(key, 0) >= artist_cap:
+            return False
+        chosen.append(item)
+        chosen_ids.add(item["media"].id)
+        artist_count[key] = artist_count.get(key, 0) + 1
+        return True
+
+    for media_id in ai_reasons:
+        if len(chosen) >= limit:
+            return chosen
+        item = by_id.get(media_id)
+        if item is not None:
+            _try_add(item)
+
+    for item in scored:
+        if len(chosen) >= limit:
+            return chosen
+        _try_add(item)
+
+    return chosen
+
+
+def recommend_manga(
+    db: Session,
+    query: str,
+    limit: int,
+    avoid_tags: Iterable[str],
+    preferred_tags: Iterable[str],
+) -> dict:
     preferences, ai_enabled, message = parse_preferences(query, avoid_tags, preferred_tags)
-    candidates = media_candidates(db, preferences.get("avoid_terms") or [])
-    scored = []
-    for media in candidates:
-        score, matched = score_candidate(media, preferences)
-        scored.append({"media": media, "score": score, "matched_tags": matched})
-    scored.sort(key=lambda item: item["score"], reverse=True)
+
+    positive_tokens = _query_tokens(preferences, "positive_terms")
+    avoid_tokens = [t for t in _query_tokens(preferences, "avoid_terms") if _avoid_token_usable(t)]
+
+    rows = (
+        db.query(models.Media)
+        .filter(
+            models.Media.media_type == "manga",
+            models.Media.is_missing == False,  # noqa: E712
+            models.Media.duplicate_status.notin_(list(HIDDEN_DUPLICATE_STATUSES)),
+        )
+        .all()
+    )
+
+    field_tokens_by_id: dict[int, dict[str, set[str]]] = {
+        media.id: manga_search.build_field_tokens(media) for media in rows
+    }
+    idf = manga_search.compute_idf(field_tokens_by_id)
+
+    scored: list[dict] = []
+    for media in rows:
+        fields = field_tokens_by_id[media.id]
+        if avoid_tokens and manga_search.avoid_hit(fields, avoid_tokens):
+            continue
+        text_score, matched = manga_search.score_text_match(fields, positive_tokens, idf)
+        prior = _prior_score(media, preferences)
+        scored.append({
+            "media": media,
+            "text_score": text_score,
+            "score": text_score + prior,
+            "matched_tags": matched,
+        })
+
+    # Two-key sort: text-score first (so query relevance wins), prior as tiebreak.
+    scored.sort(key=lambda item: (item["text_score"], item["score"]), reverse=True)
 
     ai_reasons, ai_message = ai_rank_and_explain(query, scored, limit)
     if ai_message and not message:
         message = ai_message
 
-    by_id = {item["media"].id: item for item in scored}
-    ordered_items = []
-    for media_id in ai_reasons:
-        item = by_id.get(media_id)
-        if item and item not in ordered_items:
-            ordered_items.append(item)
-    for item in scored:
-        if len(ordered_items) >= limit:
-            break
-        if item not in ordered_items:
-            ordered_items.append(item)
+    ordered = _apply_diversity(scored, ai_reasons, limit)
 
     recommendations = []
-    for item in ordered_items[:limit]:
+    for item in ordered:
         media = item["media"]
         recommendations.append(
             {
@@ -422,6 +434,6 @@ def recommend_manga(db: Session, query: str, limit: int, avoid_tags: Iterable[st
         "recommendations": recommendations,
         "parsed_preferences": preferences,
         "ai_enabled": ai_enabled,
-        "candidate_count": len(candidates),
+        "candidate_count": len(scored),
         "message": message,
     }
