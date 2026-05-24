@@ -595,7 +595,7 @@ const lastOpenedText = (item: StatAttentionItem) => {
               <title>{{ bar.month }}：新增 {{ bar.added.toLocaleString() }}，累计 {{ bar.cumulative.toLocaleString() }}</title>
             </rect>
             <!-- cumulative line + area -->
-            <template v-if="growthChart.line">
+            <template v-if="growthChart.line && growthChart.area">
               <polygon :points="growthChart.area" fill="url(#growthGrad)" />
               <polyline
                 :points="growthChart.line"

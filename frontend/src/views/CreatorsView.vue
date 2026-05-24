@@ -202,8 +202,9 @@ const xProfileUrl = (sn: string) => `https://x.com/${sn}`
       >
         <button
           v-for="c in creators"
-          :key="c.screen_name"
-          @click="openCreator(c.screen_name)"
+          :key="c.key"
+          @click="c.screen_name && openCreator(c.screen_name)"
+          :disabled="!c.screen_name"
           class="group text-left flex flex-col cursor-pointer transition-all duration-300 hover:-translate-y-1 focus:outline-none focus:ring-2 focus:ring-accent/50 rounded-2xl"
         >
           <div class="aspect-[3/4] relative overflow-hidden bg-sidebar/70 rounded-2xl border border-white/10 shadow-lg group-hover:shadow-2xl group-hover:shadow-accent/10 group-hover:border-white/20 transition-all duration-300">

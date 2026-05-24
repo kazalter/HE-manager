@@ -3,7 +3,7 @@ export interface Media {
     title: string;
     relative_path: string;
     absolute_path: string;
-    media_type: 'video' | 'manga' | 'image';
+    media_type: 'video' | 'manga' | 'image' | 'audio';
     extension: string;
     file_size: number;
     cover_path: string | null;
@@ -17,6 +17,7 @@ export interface Media {
     progress: number;
     last_opened_at: string | null;
     source_url: string | null;
+    source_site: string | null;
     is_missing: boolean;
     missing_since: string | null;
     normalized_title?: string | null;
@@ -74,6 +75,8 @@ export interface DuplicateCandidatePair {
 export interface Tag {
     id: number;
     name: string;
+    namespace: string;
+    count: number;
 }
 
 export interface User {
@@ -104,6 +107,10 @@ export interface ExternalFavoriteSource {
     last_synced_at: string | null;
     last_error: string | null;
     cookie_saved: boolean;
+    api_mirrors?: string | null;
+    audio_format_filter?: string | null;
+    audio_version_filter?: string | null;
+    playlist_url?: string | null;
 }
 
 export interface ExternalDownloadTask {
