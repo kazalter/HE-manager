@@ -427,6 +427,43 @@ def get_cover_extension(content_type: str, url: str) -> str:
     return parsed_ext if parsed_ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"} else ".img"
 
 
+def ensure_asmr_cover_file(item: models.ExternalFavoriteItem, item_dir: str) -> Optional[str]:
+    """Ensure item_dir has a sidecar cover.* image, downloading from
+    item.cover_url when missing. Idempotent (returns the existing path if one
+    is already there) and best-effort (returns None on any failure — cover is
+    nice-to-have, never a download blocker).
+
+    Called from two places so a single transient fetch_file failure doesn't
+    leave a work permanently coverless:
+      1. download_asmr_item — first attempt right after audio finishes.
+      2. upsert_external_downloaded_audio_media — second attempt before the
+         Media row's thumbnail is generated, so a retried download (or a later
+         job that revisits the same work) heals the gap automatically.
+    """
+    if not item_dir or not os.path.isdir(item_dir):
+        return None
+    existing = scanner.get_work_cover_path(item_dir)
+    if existing:
+        return existing
+    cover_url = (item.cover_url or "").strip()
+    if not cover_url:
+        return None
+    try:
+        content, content_type = asmr_source.fetch_file(cover_url)
+    except Exception as exc:  # noqa: BLE001 — cover is nice-to-have
+        print(f"  ! Failed to download cover for {item.title!r}: {exc}")
+        return None
+    ext = get_cover_extension(content_type, cover_url)
+    cover_local = os.path.join(item_dir, f"cover{ext}")
+    try:
+        with open(cover_local, "wb") as cover_file:
+            cover_file.write(content)
+    except OSError as exc:
+        print(f"  ! Failed to write cover for {item.title!r}: {exc}")
+        return None
+    return cover_local
+
+
 def get_cover_cache_prefix(item: models.ExternalFavoriteItem) -> str:
     stable_id = item.external_id or str(item.id)
     digest = hashlib.sha1((item.cover_url or item.url or stable_id).encode("utf-8")).hexdigest()[:10]
@@ -579,9 +616,11 @@ def upsert_external_downloaded_audio_media(
 
     # Pull a thumbnail from the cover file download_asmr_item dropped in the
     # work folder. Only generate when there's no cover yet (avoid orphan
-    # thumb files piling up across re-runs of the same RJ).
+    # thumb files piling up across re-runs of the same RJ). If the download
+    # path's cover fetch silently failed (CDN/mirror blip), retry it here so
+    # the second attempt heals the gap — same helper, same idempotency.
     if not media.cover_path:
-        cover_src = scanner.get_work_cover_path(item_dir)
+        cover_src = ensure_asmr_cover_file(item, item_dir)
         if cover_src:
             digest = hashlib.md5(item_dir.encode("utf-8")).hexdigest()[:12]
             thumb_name = f"thumb_audio_{digest}_{int(datetime.now().timestamp())}.jpg"
@@ -1057,19 +1096,10 @@ def download_asmr_item(item: models.ExternalFavoriteItem, source: models.Externa
 
     # Download the cover image alongside the audio so the local work folder
     # is self-contained (and audio_work scanner / upsert can pick it up as
-    # the Media row's thumbnail). asmr.one CDN serves pre-authorised URLs
-    # so no bearer token is needed — same path as fetch_file uses.
-    cover_url = (item.cover_url or "").strip()
-    existing_cover = scanner.get_work_cover_path(item_dir) if cover_url else None
-    if cover_url and not existing_cover:
-        try:
-            content, content_type = asmr_source.fetch_file(cover_url)
-            ext = get_cover_extension(content_type, cover_url)
-            cover_local = os.path.join(item_dir, f"cover{ext}")
-            with open(cover_local, "wb") as cover_file:
-                cover_file.write(content)
-        except Exception as exc:  # noqa: BLE001 — cover is nice-to-have
-            print(f"  ! Failed to download cover for {item.title!r}: {exc}")
+    # the Media row's thumbnail). Failure is silently tolerated here — the
+    # upsert path retries via the same helper, so a transient blip doesn't
+    # leave the work permanently coverless.
+    ensure_asmr_cover_file(item, item_dir)
 
     # Drop a small breadcrumb file so the local folder is self-describing if
     # the DB ever gets wiped. Matches WNACG's source.txt convention.
