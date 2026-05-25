@@ -147,6 +147,19 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# Primary is the web-client fingerprint we captured X GraphQL with. Some
+# Windows proxy/TUN paths reject curl-impersonate's Chrome/BoringSSL handshake
+# with `TLS connect error: invalid library`; keep several web-like fallbacks
+# because the working profile varies between the root x.com page and the Likes
+# GraphQL endpoint under local proxy/TUN stacks.
+GRAPHQL_IMPERSONATIONS = (
+    ("chrome124", True),
+    ("chrome101", True),
+    ("edge101", False),
+    ("firefox147", True),
+    ("safari170", False),
+)
+
 
 class TweetUnavailable(Exception):
     """Raised when a tweet returns 404/403/410 or is otherwise not retrievable.
@@ -277,16 +290,27 @@ def _graphql_get(url: str, headers: dict, timeout: int, *, what: str) -> bytes:
     Cloudflare drops Python's stdlib TLS handshake, surfacing as SSL UNEXPECTED_EOF.
     Maps HTTP status codes to TweetUnavailable / TweetTransientError so callers can stay
     framework-agnostic."""
-    try:
-        response = cffi_requests.get(
-            url,
-            headers=headers,
-            timeout=timeout,
-            impersonate="chrome124",
-            allow_redirects=True,
-        )
-    except CffiRequestException as exc:
-        raise TweetTransientError(f"Network error: {exc}") from exc
+    network_errors: List[str] = []
+    response = None
+    for impersonate, keep_user_agent in GRAPHQL_IMPERSONATIONS:
+        request_headers = dict(headers)
+        if not keep_user_agent:
+            request_headers.pop("User-Agent", None)
+        try:
+            response = cffi_requests.get(
+                url,
+                headers=request_headers,
+                timeout=timeout,
+                impersonate=impersonate,
+                allow_redirects=True,
+            )
+            break
+        except CffiRequestException as exc:
+            network_errors.append(f"{impersonate}: {exc}")
+            if (impersonate, keep_user_agent) == GRAPHQL_IMPERSONATIONS[-1]:
+                raise TweetTransientError(f"Network error: {' | '.join(network_errors)}") from exc
+    if response is None:
+        raise TweetTransientError("Network error: no response from GraphQL endpoint")
 
     code = response.status_code
     if 200 <= code < 300:
