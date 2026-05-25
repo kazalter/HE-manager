@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, Boolean, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, Boolean, LargeBinary, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -116,6 +116,15 @@ class MangaAIProfile(Base):
     visual_features = Column(Text, nullable=True)
     analyzer_version = Column(String, default="v1")
     source_mtime = Column(Integer, nullable=True)
+    # Dense text embedding for semantic retrieval (Phase 2 / RAG).
+    # Stored as raw float32 bytes — encode via np.asarray(..., dtype=np.float32).tobytes(),
+    # decode via np.frombuffer(blob, dtype=np.float32). Dimension is fixed by the
+    # model in use (see manga_vector.MODEL_NAME); if you swap models, re-run
+    # backfill_embeddings.py to rewrite every row.
+    embedding = Column(LargeBinary, nullable=True)
+    # Which model produced the blob above. Lets the vector layer skip / re-embed
+    # rows that were encoded by a different (incompatible-dim) model.
+    embedding_model = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

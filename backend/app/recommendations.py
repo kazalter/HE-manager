@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from typing import Iterable, Optional
 from urllib.error import HTTPError, URLError
@@ -7,6 +8,8 @@ from urllib.request import Request, urlopen
 from sqlalchemy.orm import Session
 
 from . import ai_config, manga_search, models
+
+log = logging.getLogger(__name__)
 
 HIDDEN_DUPLICATE_STATUSES = {"checking", "strong_duplicate", "suspected_duplicate"}
 
@@ -165,7 +168,15 @@ def _dedupe(items: Iterable[str]) -> list[str]:
 def _heuristic_preferences(query: str, avoid_tags: Iterable[str], preferred_tags: Iterable[str]) -> dict:
     terms = re.findall(r"[\w\u3040-\u30ff\u3400-\u9fff]+", query.lower())
     noise = {"want", "like", "recommend", "推荐", "漫画", "作品", "一点", "不要", "想看"}
-    positive_terms = [term for term in terms if term not in noise and len(term) > 1]
+    legacy_positive = [term for term in terms if term not in noise and len(term) > 1]
+    # Re-tokenize each leftover term so a single-chunk regex hit like
+    # "想看作者mignon的作品" gets split into atomic content words instead of
+    # being passed downstream as one positive_term (which contaminated the
+    # vector query with filler vocabulary and the BM25 surface with garbage).
+    positive_terms = []
+    for term in legacy_positive:
+        sub = manga_search.tokenize(term)
+        positive_terms.extend(sub if sub else [term])
     return {
         "positive_terms": _dedupe(list(preferred_tags) + positive_terms),
         "avoid_terms": _dedupe(list(avoid_tags)),
@@ -199,6 +210,38 @@ LENGTH_BONUS = 8.0
 LENGTH_MEDIUM_BONUS = 6.0
 ARTIST_DIVERSITY_CAP = 2
 AI_RERANK_POOL = 60  # how many top-scored candidates DeepSeek gets to reorder
+
+# --- RAG fusion --------------------------------------------------------------
+# Reciprocal Rank Fusion combines two ranked lists (BM25 + vector) into one.
+# Standard k = 60 from the original RRF paper. FUSION_WEIGHT scales the raw
+# RRF score (which is small — top hit in both lists ≈ 2/61 = 0.033) up to a
+# range that competes with the prior_score (rating ≤ 50 + favorite 18). With
+# W = 1000:
+#   * top in both lists: ~33 — outranks a 3-star prior (30), beats by ~30%
+#   * top in BM25 only:  ~16 — beats a 1-star prior (10) but loses to 4-star
+# The matched-pool filter still excludes anything with fused == 0 when the
+# user provided positive_tokens, so unrelated high-rating items don't appear
+# even if their prior would otherwise win.
+RRF_K = 60
+FUSION_WEIGHT = 1000.0
+VECTOR_POOL = 60  # how many top vector neighbours we even consider for fusion
+
+# MiniLM-multilingual cosine noise floors are query-dependent: for an exact
+# author lookup the noise sits around 0.27, but for vague "doujin theme"
+# queries the model maps half the library to ≈ 0.5 from shared vocabulary
+# alone. A fixed threshold can't separate both, so we use an *adaptive*
+# threshold: a hit only counts if it scores at least the corpus 90th
+# percentile plus a small gap. This auto-tightens when the query is fuzzy
+# (most of the corpus would be "similar") and relaxes when the query has
+# a clear semantic target. The absolute floor stops single rare-sim
+# outliers from dragging the threshold low enough to admit garbage.
+VECTOR_MIN_SIMILARITY = 0.30
+# Empirical: on this library MiniLM-multilingual gives real-match cosines
+# in the 0.58–0.67 range, while p90 of "everything that's not a match"
+# sits at 0.27–0.47 depending on the query. A 0.10 gap above p90 cleanly
+# rejects the noise tail while admitting genuinely-semantic hits like
+# "黑暗系恐怖物" → "Nightmare from Goddess" (0.46 vs p90 0.28).
+VECTOR_GAP_OVER_P90 = 0.10
 
 
 def _prior_score(media: models.Media, preferences: dict) -> float:
@@ -294,6 +337,11 @@ def _candidate_for_llm(item: dict) -> dict:
         "page_count": media.page_count,
         "matched": item["matched_tags"][:8],
         "text_score": round(float(item.get("text_score", 0)), 2),
+        # Retrieval provenance — LLM can use this to weigh keyword vs
+        # semantic match. None = the candidate didn't make that retriever's
+        # top-K.
+        "bm25_rank": item.get("bm25_rank"),
+        "vec_rank": item.get("vec_rank"),
     }
 
 
@@ -389,6 +437,64 @@ def _apply_diversity(
     return chosen
 
 
+def _vector_ranks(
+    preferences: dict,
+    candidate_media: list[models.Media],
+) -> dict[int, int]:
+    """RAG retrieval pass: cosine top-K over manga embeddings.
+
+    Returns {media_id: rank} where rank is 0-indexed position in the
+    threshold-filtered cosine-sorted list. Empty when there's nothing to
+    embed (no positive_terms), no candidates have a usable embedding, or
+    the model itself isn't available. Best-effort: any failure logs a
+    warning and silently returns {}, letting BM25-only ranking continue.
+
+    Design choice: this used to also include the raw user sentence in the
+    query text, but on this corpus that pulled the embedding toward
+    generic doujin filler vocabulary and contaminated results. We now use
+    only the parsed positive_terms (artist name, theme, tone, ...).
+    """
+    positive_terms = _as_list(preferences.get("positive_terms"))
+    if not positive_terms:
+        return {}
+
+    try:
+        from . import manga_vector  # heavy dep, lazy import
+        query_text = " ".join(positive_terms)[:512]
+        query_vec = manga_vector.encode_query(query_text)
+
+        profiles = [m.ai_profile for m in candidate_media if m.ai_profile]
+        pairs = manga_vector.load_candidate_vectors(profiles)
+        if not pairs:
+            return {}
+
+        all_ranked = manga_vector.rank_by_query(query_vec, pairs, top_k=len(pairs))
+        if not all_ranked:
+            return {}
+
+        import numpy as np  # local — already a hard dep of manga_vector
+        sims = np.array([sim for _, sim in all_ranked])
+        # Adaptive threshold: p90 + a small gap, with an absolute floor.
+        # Tiny corpora (< 10 candidates) skip the percentile and use the
+        # absolute floor only — p90 isn't meaningful when N is that small.
+        if len(sims) >= 10:
+            p90 = float(np.percentile(sims, 90))
+            threshold = max(VECTOR_MIN_SIMILARITY, p90 + VECTOR_GAP_OVER_P90)
+        else:
+            p90 = float("nan")
+            threshold = VECTOR_MIN_SIMILARITY
+        kept = [
+            (mid, sim) for mid, sim in all_ranked[:VECTOR_POOL]
+            if sim >= threshold
+        ]
+        log.debug("vector retrieval: %d candidates, p90=%.3f, threshold=%.3f, kept=%d",
+                  len(pairs), p90, threshold, len(kept))
+        return {mid: idx for idx, (mid, _sim) in enumerate(kept)}
+    except Exception as exc:  # noqa: BLE001 — best-effort retrieval
+        log.warning("vector retrieval skipped: %s", exc)
+        return {}
+
+
 def recommend_manga(
     db: Session,
     query: str,
@@ -416,6 +522,7 @@ def recommend_manga(
     }
     idf = manga_search.compute_idf(field_tokens_by_id)
 
+    # ---- BM25 pass + avoid filter ----------------------------------------
     scored: list[dict] = []
     for media in rows:
         fields = field_tokens_by_id[media.id]
@@ -426,19 +533,61 @@ def recommend_manga(
         scored.append({
             "media": media,
             "text_score": text_score,
-            "score": text_score + prior,
+            "prior": prior,
             "matched_tags": matched,
         })
 
-    # Two-key sort: text-score first (so query relevance wins), prior as tiebreak.
-    scored.sort(key=lambda item: (item["text_score"], item["score"]), reverse=True)
+    # ---- BM25 ranks (compute first so we can gate vector retrieval) ------
+    # BM25 contributes a rank only for items with text_score > 0 (no point
+    # giving a slot to "matched zero query tokens but happened to be in the
+    # candidate set").
+    bm25_ranked = sorted(
+        [item for item in scored if item["text_score"] > 0],
+        key=lambda x: x["text_score"],
+        reverse=True,
+    )
+    bm25_rank_by_id = {item["media"].id: idx for idx, item in enumerate(bm25_ranked)}
 
-    # When the user provided concrete content terms, only show items that
-    # actually matched at least one of them. Otherwise (browse mode), keep the
-    # full pool ranked by prior. This prevents padding the result list with
-    # zero-relevance high-rated picks when only a few real matches exist.
+    # ---- Vector pass (RAG semantic recall) -------------------------------
+    # Gated on BM25 producing at least one match. Rationale: vector is an
+    # *augmentation* over keyword retrieval, not an independent recall
+    # channel. When BM25 finds nothing, it's because the query refers to
+    # something not in the library — adding cosine-nearest neighbours just
+    # surfaces noise (e.g. asking for an author who isn't in the library
+    # previously returned five vaguely-cosine-adjacent strangers; the
+    # MiniLM-multilingual noise floor is too high on doujin-style
+    # titles to safely cold-start). Letting BM25 ground the relevance
+    # signal keeps the empty-result message from Phase 1 honest.
+    surviving_media = [item["media"] for item in scored]
+    if bm25_ranked:
+        vec_rank_by_id = _vector_ranks(preferences, surviving_media)
+    else:
+        vec_rank_by_id = {}
+
+    # ---- RRF fusion -------------------------------------------------------
+
+    for item in scored:
+        mid = item["media"].id
+        rrf = 0.0
+        if mid in bm25_rank_by_id:
+            rrf += 1.0 / (RRF_K + bm25_rank_by_id[mid] + 1)
+        if mid in vec_rank_by_id:
+            rrf += 1.0 / (RRF_K + vec_rank_by_id[mid] + 1)
+        item["fused"] = rrf * FUSION_WEIGHT
+        item["vec_rank"] = vec_rank_by_id.get(mid)
+        item["bm25_rank"] = bm25_rank_by_id.get(mid)
+        item["score"] = item["fused"] + item["prior"]
+
+    # ---- Sort + empty-result guard ---------------------------------------
+    # Sort by total score = fused + prior. Within matched_pool the prior can
+    # legitimately move things around (e.g. two items both matched 'hahakigi'
+    # equally well, but one is a 4-star favorite — that wins). Items with
+    # fused == 0 are about to be filtered out below when positive_tokens is
+    # present, so they can't shoulder past matched items via prior alone.
+    scored.sort(key=lambda item: item["score"], reverse=True)
+
     if positive_tokens:
-        matched_pool = [item for item in scored if item["text_score"] > 0]
+        matched_pool = [item for item in scored if item["fused"] > 0]
         if not matched_pool:
             terms = ", ".join(_as_list(preferences.get("positive_terms"))[:3]) or query
             return {

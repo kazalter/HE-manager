@@ -341,8 +341,28 @@ def ensure_media_cover_info_columns():
             conn.execute(text("ALTER TABLE media ADD COLUMN cover_source VARCHAR"))
 
 
+def ensure_manga_ai_profile_columns():
+    """Phase 2: add the dense-embedding columns to manga_ai_profiles.
+
+    The table itself is created by Base.metadata.create_all on first boot, but
+    `create_all` never adds columns to an already-existing table, so we still
+    need this idempotent ALTER for installs that came up before the
+    embedding/embedding_model columns existed.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("manga_ai_profiles"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("manga_ai_profiles")}
+    with engine.begin() as conn:
+        if "embedding" not in columns:
+            conn.execute(text("ALTER TABLE manga_ai_profiles ADD COLUMN embedding BLOB"))
+        if "embedding_model" not in columns:
+            conn.execute(text("ALTER TABLE manga_ai_profiles ADD COLUMN embedding_model VARCHAR"))
+
+
 ensure_media_indexes()
 ensure_media_cover_info_columns()
+ensure_manga_ai_profile_columns()
 
 
 def ensure_x_import_indexes():

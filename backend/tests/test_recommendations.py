@@ -6,7 +6,9 @@ from PIL import Image
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import ai_config, manga_metadata, manga_profiles, manga_search, models, recommendations
+import numpy as np
+
+from app import ai_config, manga_metadata, manga_profiles, manga_search, manga_vector, models, recommendations
 
 
 class RecommendationTest(unittest.TestCase):
@@ -351,6 +353,194 @@ class RecommendationTest(unittest.TestCase):
         # 1-char Latin and stopwords are dropped
         self.assertNotIn("a", toks)
         self.assertNotIn("想看", toks)
+
+    # ------------------------------------------------------------------
+    # Phase 2 — vector retrieval + RRF fusion
+    # ------------------------------------------------------------------
+
+    def test_serialize_deserialize_vec_roundtrip(self):
+        original = np.array([0.1, -0.2, 0.3, 0.4], dtype=np.float32)
+        blob = manga_vector.serialize_vec(original)
+        # Each float32 is 4 bytes.
+        self.assertEqual(len(blob), 4 * len(original))
+        restored = manga_vector.deserialize_vec(blob, dim=len(original))
+        self.assertTrue(np.array_equal(restored, original))
+
+    def test_deserialize_vec_rejects_wrong_dim(self):
+        blob = manga_vector.serialize_vec(np.array([0.1, 0.2, 0.3], dtype=np.float32))
+        # Asking for the wrong dimension must return None, not silently
+        # reinterpret the bytes.
+        self.assertIsNone(manga_vector.deserialize_vec(blob, dim=384))
+
+    def test_rank_by_query_returns_cosine_order(self):
+        query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        candidates = [
+            (10, np.array([0.9, 0.1, 0.0], dtype=np.float32)),  # most similar
+            (20, np.array([0.0, 1.0, 0.0], dtype=np.float32)),  # orthogonal
+            (30, np.array([0.7, 0.3, 0.0], dtype=np.float32)),  # second-most similar
+        ]
+        ranked = manga_vector.rank_by_query(query, candidates, top_k=3)
+        order = [mid for mid, _sim in ranked]
+        self.assertEqual(order, [10, 30, 20])
+
+    def test_compose_doc_text_pulls_title_artist_tags(self):
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            media = self._make_manga(
+                db, folder, "测试漫画标题", tags=["短篇", "治愈"], artist="测试作者",
+            )
+            db.add(folder)
+            db.commit()
+            text = manga_vector.compose_doc_text(media)
+            self.assertIn("测试漫画标题", text)
+            self.assertIn("测试作者", text)
+            self.assertIn("短篇", text)
+            self.assertIn("治愈", text)
+        finally:
+            db.close()
+
+    def test_vector_boosts_when_bm25_has_at_least_one_match(self):
+        """Vector augments BM25, it doesn't replace it.
+
+        Design: vector retrieval is gated on BM25 having at least one
+        match somewhere in the library. The rationale (see _vector_ranks
+        docstring) is that adding cosine-nearest neighbours when BM25
+        finds *nothing* surfaces noise rather than rescue — see the
+        mignon-not-in-library case. So this test:
+
+        1. Library has *two* manga. One weakly matches BM25 on "温馨",
+           anchoring the query as "something exists for this".
+        2. A second manga shares no tokens with the query but a
+           hand-crafted embedding makes it cosine-close.
+        3. Both should appear in the result — BM25 picks up the first,
+           vector picks up the second.
+        """
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            # Anchor: title contains '温馨' so BM25 finds it on the query token.
+            anchor = self._make_manga(db, folder, "温馨日常的小故事", rating=2)
+            # Target: no shared tokens with query — only embedding makes it close.
+            target = self._make_manga(db, folder, "标题完全无关", tags=["治愈"], rating=3)
+            db.add(folder)
+            db.commit()
+
+            dim = manga_vector.VECTOR_DIM
+            target_vec = np.zeros(dim, dtype=np.float32)
+            target_vec[0] = 1.0
+            profile = models.MangaAIProfile(
+                media=target,
+                embedding=manga_vector.serialize_vec(target_vec),
+                embedding_model=manga_vector.MODEL_NAME,
+                style_tags="[]", story_tags="[]", tone_tags="[]",
+                recommendation_keywords="[]",
+            )
+            db.add(profile)
+            db.commit()
+
+            original_encode = manga_vector.encode_query
+            manga_vector.encode_query = lambda q: target_vec.copy()
+            try:
+                result = recommendations.recommend_manga(
+                    db=db, query="温馨日常",
+                    limit=5, avoid_tags=[], preferred_tags=["温馨"],
+                )
+            finally:
+                manga_vector.encode_query = original_encode
+
+            ids = [item["media"].id for item in result["recommendations"]]
+            self.assertIn(anchor.id, ids, "BM25 anchor must appear")
+            self.assertIn(target.id, ids,
+                          "vector should boost the target once BM25 has any match")
+        finally:
+            db.close()
+
+    def test_vector_does_not_rescue_when_bm25_misses_completely(self):
+        """When BM25 finds nothing, vector does NOT add candidates.
+
+        This is the mignon-not-in-library guarantee: no real keyword match
+        means an honest empty result, not a list of cosine-noise neighbours.
+        """
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            # No manga shares any token with "noexistword" — BM25 finds zero.
+            target = self._make_manga(db, folder, "完全不相关的标题", tags=["短篇"], rating=5)
+            db.add(folder)
+            db.commit()
+
+            # Even with a hand-crafted embedding that would otherwise boost it,
+            # vector retrieval must be skipped because BM25 has no match.
+            dim = manga_vector.VECTOR_DIM
+            target_vec = np.zeros(dim, dtype=np.float32)
+            target_vec[0] = 1.0
+            profile = models.MangaAIProfile(
+                media=target,
+                embedding=manga_vector.serialize_vec(target_vec),
+                embedding_model=manga_vector.MODEL_NAME,
+                style_tags="[]", story_tags="[]", tone_tags="[]",
+                recommendation_keywords="[]",
+            )
+            db.add(profile)
+            db.commit()
+
+            original_encode = manga_vector.encode_query
+            manga_vector.encode_query = lambda q: target_vec.copy()
+            try:
+                result = recommendations.recommend_manga(
+                    db=db, query="noexistword",
+                    limit=5, avoid_tags=[], preferred_tags=["noexistword"],
+                )
+            finally:
+                manga_vector.encode_query = original_encode
+
+            self.assertEqual(result["recommendations"], [],
+                             "no BM25 match must yield empty, not vector noise")
+            self.assertIsNotNone(result["message"])
+        finally:
+            db.close()
+
+    def test_vector_rank_does_not_override_avoid_filter(self):
+        """Even if the embedding makes a manga semantically close, an avoid_tag
+        match in tags/title must still filter it out before vector pass.
+        """
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            blocked = self._make_manga(
+                db, folder, "黑暗系恐怖故事", tags=["黑暗"], rating=4,
+            )
+            db.add(folder)
+            db.commit()
+
+            dim = manga_vector.VECTOR_DIM
+            target_vec = np.zeros(dim, dtype=np.float32)
+            target_vec[0] = 1.0
+            profile = models.MangaAIProfile(
+                media=blocked,
+                embedding=manga_vector.serialize_vec(target_vec),
+                embedding_model=manga_vector.MODEL_NAME,
+                style_tags="[]", story_tags="[]", tone_tags="[]",
+                recommendation_keywords="[]",
+            )
+            db.add(profile)
+            db.commit()
+
+            original_encode = manga_vector.encode_query
+            manga_vector.encode_query = lambda q: target_vec.copy()
+            try:
+                result = recommendations.recommend_manga(
+                    db=db, query="想看类似的", limit=5,
+                    avoid_tags=["黑暗"], preferred_tags=["类似"],
+                )
+            finally:
+                manga_vector.encode_query = original_encode
+
+            ids = [item["media"].id for item in result["recommendations"]]
+            self.assertNotIn(blocked.id, ids)
+        finally:
+            db.close()
 
     def test_manga_metadata_profile_parses_title_and_source_item(self):
         db = self.Session()

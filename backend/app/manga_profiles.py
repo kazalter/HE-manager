@@ -394,7 +394,32 @@ def analyze_media(db: Session, media: models.Media, sample_count: int = 10, forc
     profile.analyzer_version = ANALYZER_VERSION
     profile.source_mtime = _source_mtime(media)
     profile.updated_at = datetime.utcnow()
+
+    # Compute the dense embedding from the now-final profile fields. This is
+    # best-effort: the embedding model may not be installed, may fail to load,
+    # or may OOM. None of that should block the rest of the analysis from
+    # being persisted — recommendations will just fall back to BM25-only for
+    # this row until the next backfill.
+    _maybe_embed(profile, media)
     return profile
+
+
+def _maybe_embed(profile: models.MangaAIProfile, media: models.Media) -> None:
+    """Best-effort: compose the manga's canonical text and store its embedding.
+
+    Imported inside the function so the heavy sentence-transformers dep is
+    only paid when actually analyzing a manga, not on every backend import.
+    """
+    try:
+        from . import manga_vector  # local import; heavy dep
+        text = manga_vector.compose_doc_text(media)
+        vec = manga_vector.encode_text(text)
+        profile.embedding = manga_vector.serialize_vec(vec)
+        profile.embedding_model = manga_vector.MODEL_NAME
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break analysis
+        log.warning("embedding encode failed for media %s: %s", media.id, exc)
+        # Leave the existing embedding alone (might be stale, but better than
+        # blanking it on transient failure).
 
 
 def profile_stats(db: Session) -> dict:
