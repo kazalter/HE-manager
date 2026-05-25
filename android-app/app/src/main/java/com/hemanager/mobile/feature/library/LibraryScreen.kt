@@ -328,9 +328,10 @@ internal fun LibraryScreenV2(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var filterSheetOpen by remember { mutableStateOf(false) }
 
-    // 接 MainActivity 的左边缘滑动手势：注册回调让 dispatchTouchEvent 探测到边缘手势时
-    // 能打开本屏幕的 drawer。LibraryScreen 卸载时（导航到 CreatorsScreen 等）清掉，
-    // 避免边缘手势在不该有抽屉的页面尝试调用过期的 drawerState。
+    // 接 MainActivity 的左边缘滑动兜底手势：普通 Compose 列表可以让
+    // ModalNavigationDrawer 自己处理手势；图片图廊是 AndroidView/RecyclerView，
+    // 会吃掉 Compose 的抽屉拖动，所以图廊分支用下面的 Compose edge bridge，
+    // 并在 mediaType == "image" 时关闭 Activity 级“阈值触发打开”模型。
     val mainActivity = context as? com.hemanager.mobile.MainActivity
     DisposableEffect(mainActivity, drawerState, scope) {
         mainActivity?.edgeDrawerOpenRequester = {
@@ -341,6 +342,9 @@ internal fun LibraryScreenV2(
             mainActivity?.edgeDrawerGestureEnabled = false
             mainActivity?.edgeDrawerOpenRequester = null
         }
+    }
+    LaunchedEffect(mainActivity, mediaType) {
+        mainActivity?.edgeDrawerGestureEnabled = mediaType != "image"
     }
     var tagSheetItem by remember { mutableStateOf<MediaItem?>(null) }
     // Pending optimistic-deletes — keyed by media id so concurrent deletes don't collide.
@@ -1021,55 +1025,97 @@ internal fun LibraryScreenV2(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .onSizeChanged { pinchRecyclerSizePx = it }
-                                    .graphicsLayer {
-                                        scaleX = pinchVisualScale.value
-                                        scaleY = pinchVisualScale.value
-                                        val w = pinchRecyclerSizePx.width.toFloat()
-                                            .coerceAtLeast(1f)
-                                        val h = pinchRecyclerSizePx.height.toFloat()
-                                            .coerceAtLeast(1f)
-                                        transformOrigin = TransformOrigin(
-                                            (pinchFocalPx.x / w).coerceIn(0f, 1f),
-                                            (pinchFocalPx.y / h).coerceIn(0f, 1f)
-                                        )
-                                    }
-                                    .clipToBounds()
                             ) {
-                                NativeImageGalleryRecyclerV2(
-                                    items = visibleItems,
-                                    serverUrl = serverUrl,
-                                    token = token,
-                                    loading = loading,
-                                    error = error,
-                                    search = search,
-                                    mediaFilters = mediaFilters,
-                                    statusFilters = statusFilters,
-                                    selectedMediaType = mediaType,
-                                    selectedStatus = statusFilter,
-                                    viewMode = viewMode,
-                                    columns = galleryColumns,
-                                    tileDp = actualImageTileDp,
-                                    interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
-                                    playlist = visibleItems,
-                                    onSearchChange = { search = it },
-                                    onMediaSelected = { mediaType = it },
-                                    onStatusSelected = { statusFilter = it },
-                                    onOpenFilters = { filterSheetOpen = true },
-                                    onViewModeSelected = { viewMode = it },
-                                    onMenu = { scope.launch { drawerState.open() } },
-                                    onRefresh = { load(search) },
-                                    onRetry = { load(search) },
-                                    onRecycler = { imageGalleryRecyclerView = it },
-                                    onBackTopVisible = { visible ->
-                                        imageGalleryBackTopVisible = visible
-                                    },
-                                    inlineHeaders = false,
-                                    pinchZoomEnabled = true,
-                                    onPinchStart = onPinchStart,
-                                    onPinch = onPinch,
-                                    onPinchEnd = onPinchEnd,
-                                    modifier = Modifier.fillMaxSize()
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer {
+                                            scaleX = pinchVisualScale.value
+                                            scaleY = pinchVisualScale.value
+                                            val w = pinchRecyclerSizePx.width.toFloat()
+                                                .coerceAtLeast(1f)
+                                            val h = pinchRecyclerSizePx.height.toFloat()
+                                                .coerceAtLeast(1f)
+                                            transformOrigin = TransformOrigin(
+                                                (pinchFocalPx.x / w).coerceIn(0f, 1f),
+                                                (pinchFocalPx.y / h).coerceIn(0f, 1f)
+                                            )
+                                        }
+                                        .clipToBounds()
+                                ) {
+                                    NativeImageGalleryRecyclerV2(
+                                        items = visibleItems,
+                                        serverUrl = serverUrl,
+                                        token = token,
+                                        loading = loading,
+                                        error = error,
+                                        search = search,
+                                        mediaFilters = mediaFilters,
+                                        statusFilters = statusFilters,
+                                        selectedMediaType = mediaType,
+                                        selectedStatus = statusFilter,
+                                        viewMode = viewMode,
+                                        columns = galleryColumns,
+                                        tileDp = actualImageTileDp,
+                                        interactionsEnabled = imageGalleryInteractionsEnabled && !imageGalleryPinching,
+                                        playlist = visibleItems,
+                                        onSearchChange = { search = it },
+                                        onMediaSelected = { mediaType = it },
+                                        onStatusSelected = { statusFilter = it },
+                                        onOpenFilters = { filterSheetOpen = true },
+                                        onViewModeSelected = { viewMode = it },
+                                        onMenu = { scope.launch { drawerState.open() } },
+                                        onRefresh = { load(search) },
+                                        onRetry = { load(search) },
+                                        onRecycler = { imageGalleryRecyclerView = it },
+                                        onBackTopVisible = { visible ->
+                                            imageGalleryBackTopVisible = visible
+                                        },
+                                        inlineHeaders = false,
+                                        pinchZoomEnabled = true,
+                                        onPinchStart = onPinchStart,
+                                        onPinch = onPinch,
+                                        onPinchEnd = onPinchEnd,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+
+                                if (
+                                    !imageGalleryPinching &&
+                                    !imageGallerySettling &&
+                                    drawerState.currentValue == DrawerValue.Closed
+                                ) {
+                                    val drawerBridgeOpenDistancePx = with(density) { 28.dp.toPx() }
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.CenterStart)
+                                            .fillMaxHeight()
+                                            .width(40.dp)
+                                            .pointerInput(drawerBridgeOpenDistancePx) {
+                                                awaitEachGesture {
+                                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                                    val start = down.position
+                                                    var opened = false
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        val change = event.changes.firstOrNull { it.id == down.id }
+                                                            ?: break
+                                                        val dx = change.position.x - start.x
+                                                        val dy = change.position.y - start.y
+                                                        if (
+                                                            !opened &&
+                                                            dx > drawerBridgeOpenDistancePx &&
+                                                            abs(dx) > abs(dy) * 1.05f
+                                                        ) {
+                                                            opened = true
+                                                            scope.launch { drawerState.open() }
+                                                        }
+                                                        if (!change.pressed) break
+                                                    }
+                                                }
+                                            }
+                                    )
+                                }
                             }
                         }
                     }
