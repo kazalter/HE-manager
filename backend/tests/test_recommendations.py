@@ -355,6 +355,124 @@ class RecommendationTest(unittest.TestCase):
         self.assertNotIn("想看", toks)
 
     # ------------------------------------------------------------------
+    # Phase 3 — intent routing
+    # ------------------------------------------------------------------
+
+    def test_heuristic_intent_browse_when_query_is_all_stopwords(self):
+        prefs = recommendations._heuristic_preferences("推荐一些作品", [], [])
+        self.assertEqual(prefs["intent"], "browse")
+        self.assertEqual(prefs["positive_terms"], [])
+
+    def test_heuristic_intent_by_author_when_query_names_an_artist(self):
+        prefs = recommendations._heuristic_preferences("想看作者hahakigi的作品", [], [])
+        self.assertEqual(prefs["intent"], "by_author")
+        # The heuristic puts all surviving positive terms into the artists slot.
+        self.assertIn("hahakigi", prefs["slots"]["artists"])
+
+    def test_heuristic_intent_by_style_when_query_describes_genre(self):
+        prefs = recommendations._heuristic_preferences("想看治愈系短篇", [], [])
+        self.assertEqual(prefs["intent"], "by_style")
+        self.assertEqual(prefs["slots"]["length"], "short")
+
+    def test_by_author_route_returns_empty_with_named_message(self):
+        """Asking for an artist that isn't in the library must produce a
+        specific message naming the missing artist, not the generic
+        'nothing matched' fallback."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            self._make_manga(db, folder, "其他作者的作品", artist="someone_else", rating=3)
+            db.add(folder)
+            db.commit()
+            result = recommendations.recommend_manga(
+                db=db, query="想看作者zzznotinlib的作品",
+                limit=5, avoid_tags=[], preferred_tags=["zzznotinlib"],
+            )
+            self.assertEqual(result["recommendations"], [])
+            self.assertIsNotNone(result["message"])
+            self.assertIn("zzznotinlib", result["message"])
+            # The by_author message mentions "作者" specifically, distinguishing
+            # it from a generic "未找到相关条目".
+            self.assertIn("作者", result["message"])
+        finally:
+            db.close()
+
+    def test_by_author_route_finds_artist_via_partial_match(self):
+        """media.artist 'Hahakigi' must match user input 'hahakigi'
+        (case-insensitive)."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            target = self._make_manga(
+                db, folder, "[Hahakigi] some work",
+                artist="Hahakigi", rating=3,
+            )
+            self._make_manga(db, folder, "unrelated", artist="other", rating=5)
+            db.add(folder)
+            db.commit()
+            result = recommendations.recommend_manga(
+                db=db, query="想看作者hahakigi的作品",
+                limit=5, avoid_tags=[], preferred_tags=["hahakigi"],
+            )
+            ids = [item["media"].id for item in result["recommendations"]]
+            self.assertIn(target.id, ids)
+            # The higher-rated unrelated artist must NOT appear — by_author
+            # is a precision filter, no popularity fallback.
+            self.assertEqual(len(ids), 1)
+        finally:
+            db.close()
+
+    def test_browse_route_when_query_lacks_content_terms(self):
+        """An empty / all-stopword query should fall into browse and rank
+        by favorite + rating, not return empty."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            best = self._make_manga(db, folder, "favorite 5-star", rating=5, favorite=True)
+            self._make_manga(db, folder, "mediocre", rating=2)
+            db.add(folder)
+            db.commit()
+            result = recommendations.recommend_manga(
+                db=db, query="随便看看", limit=5, avoid_tags=[], preferred_tags=[],
+            )
+            self.assertGreater(len(result["recommendations"]), 0)
+            # The favorite + 5-star manga must come first.
+            self.assertEqual(result["recommendations"][0]["media"].id, best.id)
+        finally:
+            db.close()
+
+    def test_similar_to_route_returns_helpful_message_when_title_unknown(self):
+        """Asking 'similar to <X>' when <X> isn't in the library must say
+        so, not fall back to keyword search."""
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Manga", scan_mode="manga")
+            self._make_manga(db, folder, "some unrelated manga", rating=3)
+            db.add(folder)
+            db.commit()
+            # Build preferences manually to skip the LLM path — heuristic
+            # can't reliably extract similar_to_title from free text.
+            prefs = {
+                "intent": "similar_to",
+                "slots": {
+                    "artists": [],
+                    "similar_to_title": "absolutely-not-in-library-xyz",
+                    "themes": [], "tone": [], "length": "any", "avoid_terms": [],
+                },
+                "positive_terms": [],
+                "avoid_terms": [],
+                "tone": [],
+                "length": "any",
+            }
+            candidates = recommendations.manga_retrievers.visible_manga(db)
+            scored, err = recommendations._route_similar_to(db, prefs, candidates, [])
+            self.assertEqual(scored, [])
+            self.assertIsNotNone(err)
+            self.assertIn("absolutely-not-in-library-xyz", err)
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
     # Phase 2 — vector retrieval + RRF fusion
     # ------------------------------------------------------------------
 

@@ -86,6 +86,7 @@ _STOPWORDS: frozenset[str] = frozenset({
     # zh — verbs / fillers
     "想看", "想要", "推荐", "一点", "一些", "看看", "求", "的", "了",
     "请", "帮我", "找", "类似", "类型", "看", "想", "有", "没有", "是",
+    "随便", "随意", "任意", "不知道", "看点",
     # zh — generic catalog nouns
     "漫画", "作品", "本子", "本", "图", "图片", "图集", "故事",
     # zh — meta slot names (NOT content)

@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 from sqlalchemy.orm import Session
 
-from . import ai_config, manga_search, models
+from . import ai_config, manga_retrievers, manga_search, models
 
 log = logging.getLogger(__name__)
 
@@ -90,45 +90,90 @@ def call_deepseek(messages: list[dict], temperature: float = 0.2, max_tokens: in
     return str(message.get("content") or "")
 
 
+VALID_INTENTS = ("by_author", "by_style", "similar_to", "browse")
+
+
+def _normalize_intent(value: object, slots: dict) -> str:
+    """Coerce the LLM's `intent` to one of VALID_INTENTS.
+
+    Falls back to `browse` when the model emits something we don't expect.
+    `by_author` and `similar_to` are also downgraded to `by_style` if their
+    required slot is empty (e.g. model said by_author but never extracted
+    an artist name).
+    """
+    raw = str(value or "").strip().lower()
+    if raw not in VALID_INTENTS:
+        return "browse"
+    if raw == "by_author" and not slots.get("artists"):
+        return "by_style"
+    if raw == "similar_to" and not slots.get("similar_to_title"):
+        return "by_style"
+    return raw
+
+
 def parse_preferences(query: str, avoid_tags: Iterable[str], preferred_tags: Iterable[str]) -> tuple[dict, bool, Optional[str]]:
+    """Parse the user query into an `intent` plus retrieval slots.
+
+    Output dict keys:
+      intent          one of by_author / by_style / similar_to / browse
+      slots           intent-specific structured fields (see prompt)
+      positive_terms  legacy flat token list (still consumed by the BM25
+                      + vector layer until per-intent retrievers fully
+                      replace it)
+      avoid_terms     legacy flat avoid list
+      tone            legacy tone list
+      length          short | medium | long | any
+    """
     fallback = _heuristic_preferences(query, avoid_tags, preferred_tags)
     if not deepseek_configured():
         return fallback, False, "未配置 DEEPSEEK_API_KEY，已使用本地规则推荐。"
 
     system = (
-        "你是本地漫画库的偏好解析器，把用户自然语言查询拆成结构化偏好。"
+        "你是本地漫画库的偏好解析器，把用户自然语言查询拆成结构化意图 (intent) 和槽位 (slots)。"
         "只输出 JSON，不输出解释。"
         "\n\n"
-        "硬规则："
-        "\n1) positive_terms 是单个**实质内容词**列表（作者名 / 题材 / 画风 / 氛围 / 系列 / 原作），"
-        "不要塞整句话，不要带'作者'、'画师'、'我'、'想看'这类结构词。"
-        "\n2) 作者/画师名要单独拆出来，不要黏在前缀上。"
-        "\n3) 拒绝意图的词进 avoid_terms。"
-        "\n4) length 必须是 short / medium / long / any 之一。"
+        "intent 必须是以下之一："
+        "\n  - by_author    : 用户明确指名某个作者/画师/社团。slots.artists 必填。"
+        "\n  - similar_to   : 用户引用了具体一本作品名要求'类似的'。slots.similar_to_title 必填。"
+        "\n  - by_style     : 用户描述题材/画风/氛围/篇幅。slots.themes / tone / length 视情况填。"
+        "\n  - browse       : 用户没给明确条件（'随便'、'看点什么'），返回这个。"
+        "\n\n"
+        "slots 字段说明（按 intent 取需要的，其余留空/省略）："
+        "\n  artists          : 作者/画师/社团名列表（拼写按用户原样保留，不要拼接前缀）"
+        "\n  similar_to_title : 引用作品名（原样字符串）"
+        "\n  themes           : 题材/类型关键词（青梅竹马、JK、寝取り、...）"
+        "\n  tone             : 氛围/画风形容（治愈、温馨、黑暗、画风精细、剧情向、...）"
+        "\n  length           : short | medium | long | any"
+        "\n  avoid_terms      : 用户明确不想要的内容"
+        "\n  positive_terms   : artists+themes+tone 全部去重后的扁平内容词列表（不要带结构词如'作者'/'我'/'想看'）"
         "\n\n"
         "示例：\n"
         "Q: 我想看作者mignon的作品\n"
-        "A: {\"positive_terms\": [\"mignon\"], \"avoid_terms\": [], \"tone\": [], \"length\": \"any\"}\n"
+        "A: {\"intent\":\"by_author\",\"slots\":{\"artists\":[\"mignon\"],\"length\":\"any\"},"
+        "\"positive_terms\":[\"mignon\"],\"avoid_terms\":[],\"tone\":[],\"length\":\"any\"}\n"
         "\n"
         "Q: 画师ぽるのいぶき的本子，不要黑暗\n"
-        "A: {\"positive_terms\": [\"ぽるのいぶき\"], \"avoid_terms\": [\"黑暗\"], \"tone\": [], \"length\": \"any\"}\n"
+        "A: {\"intent\":\"by_author\",\"slots\":{\"artists\":[\"ぽるのいぶき\"],\"avoid_terms\":[\"黑暗\"],"
+        "\"length\":\"any\"},\"positive_terms\":[\"ぽるのいぶき\"],\"avoid_terms\":[\"黑暗\"],"
+        "\"tone\":[],\"length\":\"any\"}\n"
         "\n"
         "Q: 想看治愈系短篇，画风精细一点\n"
-        "A: {\"positive_terms\": [\"治愈\"], \"avoid_terms\": [], \"tone\": [\"画风精细\"], \"length\": \"short\"}\n"
+        "A: {\"intent\":\"by_style\",\"slots\":{\"themes\":[\"治愈\"],\"tone\":[\"画风精细\"],\"length\":\"short\"},"
+        "\"positive_terms\":[\"治愈\",\"画风精细\"],\"avoid_terms\":[],\"tone\":[\"画风精细\"],\"length\":\"short\"}\n"
         "\n"
-        "Q: 类似[Circle (Artist)]那种感觉的长篇剧情向\n"
-        "A: {\"positive_terms\": [\"Artist\"], \"avoid_terms\": [], \"tone\": [\"剧情\"], \"length\": \"long\"}\n"
+        "Q: 类似《お姉さんと一週間》那种感觉的长篇剧情向\n"
+        "A: {\"intent\":\"similar_to\",\"slots\":{\"similar_to_title\":\"お姉さんと一週間\","
+        "\"tone\":[\"剧情向\"],\"length\":\"long\"},\"positive_terms\":[\"剧情向\"],"
+        "\"avoid_terms\":[],\"tone\":[\"剧情向\"],\"length\":\"long\"}\n"
+        "\n"
+        "Q: 随便推荐点轻松的\n"
+        "A: {\"intent\":\"browse\",\"slots\":{\"tone\":[\"轻松\"],\"length\":\"any\"},"
+        "\"positive_terms\":[\"轻松\"],\"avoid_terms\":[],\"tone\":[\"轻松\"],\"length\":\"any\"}\n"
     )
     user = {
         "query": query,
         "avoid_tags": list(avoid_tags),
         "preferred_tags": list(preferred_tags),
-        "schema": {
-            "positive_terms": ["实质内容词，单个拆开"],
-            "avoid_terms": ["用户明确不想要的内容"],
-            "tone": ["氛围/画风/节奏描述"],
-            "length": "short | medium | long | any",
-        },
     }
     try:
         content = call_deepseek(
@@ -137,18 +182,36 @@ def parse_preferences(query: str, avoid_tags: Iterable[str], preferred_tags: Ite
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
             temperature=0,
-            max_tokens=700,
+            max_tokens=900,
         )
         parsed = _safe_json_object(content)
         if not parsed:
             return fallback, True, "AI 偏好解析失败，已使用本地规则推荐。"
-        parsed["positive_terms"] = _as_list(parsed.get("positive_terms")) + fallback["positive_terms"]
-        parsed["avoid_terms"] = _as_list(parsed.get("avoid_terms")) + fallback["avoid_terms"]
-        parsed["tone"] = _as_list(parsed.get("tone"))
-        parsed["length"] = str(parsed.get("length") or "any")
-        parsed["positive_terms"] = _dedupe(parsed["positive_terms"])
-        parsed["avoid_terms"] = _dedupe(parsed["avoid_terms"])
-        return parsed, True, None
+
+        slots_raw = parsed.get("slots") if isinstance(parsed.get("slots"), dict) else {}
+        slots = {
+            "artists": _as_list(slots_raw.get("artists")),
+            "similar_to_title": str(slots_raw.get("similar_to_title") or "").strip() or None,
+            "themes": _as_list(slots_raw.get("themes")),
+            "tone": _as_list(slots_raw.get("tone")),
+            "length": str(slots_raw.get("length") or parsed.get("length") or "any"),
+            "avoid_terms": _as_list(slots_raw.get("avoid_terms")),
+        }
+        intent = _normalize_intent(parsed.get("intent"), slots)
+
+        # Legacy flat fields: merge LLM output with heuristic fallback so a
+        # short LLM response doesn't drop tokens the heuristic catches.
+        result = {
+            "intent": intent,
+            "slots": slots,
+            "positive_terms": _dedupe(_as_list(parsed.get("positive_terms")) + fallback["positive_terms"]),
+            "avoid_terms": _dedupe(_as_list(parsed.get("avoid_terms"))
+                                   + slots["avoid_terms"]
+                                   + fallback["avoid_terms"]),
+            "tone": _as_list(parsed.get("tone")) or slots["tone"],
+            "length": str(parsed.get("length") or slots["length"] or "any"),
+        }
+        return result, True, None
     except RuntimeError as exc:
         return fallback, True, str(exc)
 
@@ -173,16 +236,90 @@ def _heuristic_preferences(query: str, avoid_tags: Iterable[str], preferred_tags
     # "想看作者mignon的作品" gets split into atomic content words instead of
     # being passed downstream as one positive_term (which contaminated the
     # vector query with filler vocabulary and the BM25 surface with garbage).
-    positive_terms = []
+    positive_terms: list[str] = []
     for term in legacy_positive:
-        sub = manga_search.tokenize(term)
-        positive_terms.extend(sub if sub else [term])
+        # tokenize handles its own stopword filtering. If it returns nothing,
+        # the chunk was 100% structural/filler ("推荐一些作品" → 推荐/一些/作品
+        # all stopwords) — keeping the whole chunk as a fallback would
+        # contaminate the BM25 surface and embedding query, AND prevent
+        # the intent router from correctly classifying this as a browse query.
+        positive_terms.extend(manga_search.tokenize(term))
+    positive_terms = _dedupe(list(preferred_tags) + positive_terms)
+    avoid_terms = _dedupe(list(avoid_tags))
+
+    # Heuristic intent classification. Tight set of patterns — when in
+    # doubt, fall through to by_style because that's the safest router
+    # (BM25 + vector hybrid, same as the pre-Phase-3 default).
+    intent, slots = _classify_intent_heuristic(query, positive_terms, avoid_terms)
+
     return {
-        "positive_terms": _dedupe(list(preferred_tags) + positive_terms),
-        "avoid_terms": _dedupe(list(avoid_tags)),
+        "intent": intent,
+        "slots": slots,
+        "positive_terms": positive_terms,
+        "avoid_terms": avoid_terms,
         "tone": [],
-        "length": "any",
+        "length": slots["length"],
     }
+
+
+# Substrings that indicate the user wants results FROM a specific creator.
+# Conservative — when matched we additionally require at least one positive
+# token to actually fill the artists slot.
+_BY_AUTHOR_HINTS = ("作者", "画师", "画家", "社团", "の作品")
+_SIMILAR_HINTS = ("类似", "similar to", "像", "差不多的", "一样的", "風格的")
+
+
+def _classify_intent_heuristic(
+    query: str,
+    positive_terms: list[str],
+    avoid_terms: list[str],
+) -> tuple[str, dict]:
+    """Best-effort intent + slot extraction without an LLM.
+
+    Returns (intent, slots) where slots matches the LLM-path shape. Errs
+    toward `by_style` — the least-surprising default that preserves the
+    pre-Phase-3 hybrid retrieval behaviour.
+    """
+    q_lower = (query or "").lower()
+    length = "any"
+    if any(kw in q_lower for kw in ("短篇", "short")):
+        length = "short"
+    elif any(kw in q_lower for kw in ("长篇", "long")):
+        length = "long"
+    elif any(kw in q_lower for kw in ("中篇", "medium")):
+        length = "medium"
+
+    slots = {
+        "artists": [],
+        "similar_to_title": None,
+        "themes": [],
+        "tone": [],
+        "length": length,
+        "avoid_terms": list(avoid_terms),
+    }
+
+    has_author_hint = any(hint in q_lower for hint in _BY_AUTHOR_HINTS)
+    has_similar_hint = any(hint in q_lower for hint in _SIMILAR_HINTS)
+
+    if has_author_hint and positive_terms:
+        # No entity tagger — pass all surviving positive terms as
+        # potential artist names. The by_author retriever does its own
+        # filtering against the real artist set.
+        slots["artists"] = list(positive_terms)
+        return "by_author", slots
+
+    if has_similar_hint and positive_terms:
+        # Heuristic can't reliably extract a real title from free text;
+        # down-route to by_style so we don't claim a similar_to intent
+        # we can't service.
+        slots["themes"] = list(positive_terms)
+        return "by_style", slots
+
+    if not positive_terms:
+        return "browse", slots
+
+    slots["themes"] = list(positive_terms)
+    return "by_style", slots
 
 
 def _profile_list(value: Optional[str]) -> list[str]:
@@ -222,6 +359,12 @@ AI_RERANK_POOL = 60  # how many top-scored candidates DeepSeek gets to reorder
 # The matched-pool filter still excludes anything with fused == 0 when the
 # user provided positive_tokens, so unrelated high-rating items don't appear
 # even if their prior would otherwise win.
+# Phase 3 — per-intent score weights. These scale a 0..1 retrieval score
+# (or RRF score) into a range that competes with _prior_score.
+BY_AUTHOR_WEIGHT = 50.0       # 1.0 exact match -> 50, beats a 5-star prior
+SIMILAR_TO_WEIGHT = 60.0      # cosine 0.6 -> 36, comparable to a 4-star prior
+BROWSE_PASSTHROUGH = True     # browse scoring is already in prior-scale units
+
 RRF_K = 60
 FUSION_WEIGHT = 1000.0
 VECTOR_POOL = 60  # how many top vector neighbours we even consider for fusion
@@ -437,62 +580,216 @@ def _apply_diversity(
     return chosen
 
 
-def _vector_ranks(
+def _empty_result(
     preferences: dict,
-    candidate_media: list[models.Media],
-) -> dict[int, int]:
-    """RAG retrieval pass: cosine top-K over manga embeddings.
+    ai_enabled: bool,
+    candidate_count: int,
+    message: str,
+) -> dict:
+    return {
+        "recommendations": [],
+        "parsed_preferences": preferences,
+        "ai_enabled": ai_enabled,
+        "candidate_count": candidate_count,
+        "message": message,
+    }
 
-    Returns {media_id: rank} where rank is 0-indexed position in the
-    threshold-filtered cosine-sorted list. Empty when there's nothing to
-    embed (no positive_terms), no candidates have a usable embedding, or
-    the model itself isn't available. Best-effort: any failure logs a
-    warning and silently returns {}, letting BM25-only ranking continue.
 
-    Design choice: this used to also include the raw user sentence in the
-    query text, but on this corpus that pulled the embedding toward
-    generic doujin filler vocabulary and contaminated results. We now use
-    only the parsed positive_terms (artist name, theme, tone, ...).
+def _route_by_author(
+    preferences: dict,
+    candidates: list[models.Media],
+    avoid_tokens: list[str],
+) -> tuple[list[dict], Optional[str]]:
+    """by_author retrieval → scored items.
+
+    Returns (scored, error_message). When the artist isn't in the library
+    we surface a specific message that names what the user asked for,
+    rather than the generic "nothing matched" fallback.
     """
-    positive_terms = _as_list(preferences.get("positive_terms"))
-    if not positive_terms:
-        return {}
+    slots = preferences.get("slots") or {}
+    artists = _as_list(slots.get("artists")) or _as_list(preferences.get("positive_terms"))
+    if not artists:
+        return [], "未识别出作者/画师名。试着把名字单独写出来，例如「想看 hahakigi 的作品」。"
 
-    try:
-        from . import manga_vector  # heavy dep, lazy import
-        query_text = " ".join(positive_terms)[:512]
-        query_vec = manga_vector.encode_query(query_text)
+    # Avoid filter: build field tokens for the avoid check only.
+    if avoid_tokens:
+        ft = {m.id: manga_search.build_field_tokens(m) for m in candidates}
+        candidates = [m for m in candidates if not manga_search.avoid_hit(ft[m.id], avoid_tokens)]
 
-        profiles = [m.ai_profile for m in candidate_media if m.ai_profile]
-        pairs = manga_vector.load_candidate_vectors(profiles)
-        if not pairs:
-            return {}
+    ranks = manga_retrievers.by_author(None, artists, candidates)
+    if not ranks:
+        listed = ", ".join(artists[:3])
+        return [], (
+            f"manga 库里没找到作者「{listed}」的作品。"
+            "可能这本不在库里，或名字拼写跟库里记录的不一致（试试日文原名 / 英文转写）。"
+        )
 
-        all_ranked = manga_vector.rank_by_query(query_vec, pairs, top_k=len(pairs))
-        if not all_ranked:
-            return {}
+    by_id = {m.id: m for m in candidates}
+    scored = []
+    for media_id, retrieval_score in ranks:
+        media = by_id.get(media_id)
+        if not media:
+            continue
+        fused = retrieval_score * BY_AUTHOR_WEIGHT
+        prior = _prior_score(media, preferences)
+        scored.append({
+            "media": media,
+            "text_score": retrieval_score,  # 0..1 — surfaced to LLM for reason grounding
+            "prior": prior,
+            "matched_tags": list(artists)[:3],
+            "fused": fused,
+            "bm25_rank": None,
+            "vec_rank": None,
+            "score": fused + prior,
+        })
+    return scored, None
 
-        import numpy as np  # local — already a hard dep of manga_vector
-        sims = np.array([sim for _, sim in all_ranked])
-        # Adaptive threshold: p90 + a small gap, with an absolute floor.
-        # Tiny corpora (< 10 candidates) skip the percentile and use the
-        # absolute floor only — p90 isn't meaningful when N is that small.
-        if len(sims) >= 10:
-            p90 = float(np.percentile(sims, 90))
-            threshold = max(VECTOR_MIN_SIMILARITY, p90 + VECTOR_GAP_OVER_P90)
-        else:
-            p90 = float("nan")
-            threshold = VECTOR_MIN_SIMILARITY
-        kept = [
-            (mid, sim) for mid, sim in all_ranked[:VECTOR_POOL]
-            if sim >= threshold
-        ]
-        log.debug("vector retrieval: %d candidates, p90=%.3f, threshold=%.3f, kept=%d",
-                  len(pairs), p90, threshold, len(kept))
-        return {mid: idx for idx, (mid, _sim) in enumerate(kept)}
-    except Exception as exc:  # noqa: BLE001 — best-effort retrieval
-        log.warning("vector retrieval skipped: %s", exc)
-        return {}
+
+def _route_by_style(
+    preferences: dict,
+    candidates: list[models.Media],
+    avoid_tokens: list[str],
+) -> tuple[list[dict], Optional[str]]:
+    """BM25 + vector hybrid → RRF-fused scored items."""
+    slots = preferences.get("slots") or {}
+    # Prefer the structured slot, fall back to the flat positive_terms list.
+    query_terms = (
+        _as_list(slots.get("themes"))
+        + _as_list(slots.get("tone"))
+        + _as_list(preferences.get("positive_terms"))
+    )
+    query_terms = _dedupe(query_terms)
+    if not query_terms:
+        return [], None  # Caller will down-route to browse.
+
+    bm25_ranks, vec_ranks, matched_tags = manga_retrievers.by_style(
+        candidates, query_terms, avoid_tokens,
+    )
+    if not bm25_ranks and not vec_ranks:
+        listed = ", ".join(query_terms[:3])
+        return [], (
+            f"未在 manga 库中找到与「{listed}」相关的条目。"
+            "可以试试换关键词、或浏览其它作品。"
+        )
+
+    bm25_rank_by_id = {mid: idx for idx, (mid, _s) in enumerate(bm25_ranks)}
+    vec_rank_by_id = {mid: idx for idx, (mid, _s) in enumerate(vec_ranks)}
+
+    # Build the scored list. Include every candidate that landed in either
+    # retriever's pool — the matched_pool filter (fused > 0) trims later.
+    in_pool = set(bm25_rank_by_id) | set(vec_rank_by_id)
+    by_id = {m.id: m for m in candidates}
+    scored: list[dict] = []
+    for media_id in in_pool:
+        media = by_id.get(media_id)
+        if not media:
+            continue
+        rrf = 0.0
+        if media_id in bm25_rank_by_id:
+            rrf += 1.0 / (RRF_K + bm25_rank_by_id[media_id] + 1)
+        if media_id in vec_rank_by_id:
+            rrf += 1.0 / (RRF_K + vec_rank_by_id[media_id] + 1)
+        fused = rrf * FUSION_WEIGHT
+        prior = _prior_score(media, preferences)
+        # text_score: prefer BM25 raw score when present (more discriminating
+        # than RRF's tiny 0.01-scale numbers when surfaced to the LLM).
+        text_score_raw = next((s for mid, s in bm25_ranks if mid == media_id), 0.0)
+        scored.append({
+            "media": media,
+            "text_score": text_score_raw,
+            "prior": prior,
+            "matched_tags": matched_tags.get(media_id, []),
+            "fused": fused,
+            "bm25_rank": bm25_rank_by_id.get(media_id),
+            "vec_rank": vec_rank_by_id.get(media_id),
+            "score": fused + prior,
+        })
+    return scored, None
+
+
+def _route_similar_to(
+    db: Session,
+    preferences: dict,
+    candidates: list[models.Media],
+    avoid_tokens: list[str],
+) -> tuple[list[dict], Optional[str]]:
+    """Find the referenced manga, then cosine-rank neighbours."""
+    slots = preferences.get("slots") or {}
+    title_hint = (slots.get("similar_to_title") or "").strip()
+    if not title_hint:
+        return [], "没识别出你想参照的作品名，试着把书名加上书名号引起来，例如「类似《X》」。"
+
+    # Avoid filter: build field tokens once.
+    surviving_ids: Optional[set[int]] = None
+    if avoid_tokens:
+        ft = {m.id: manga_search.build_field_tokens(m) for m in candidates}
+        surviving_ids = {m.id for m in candidates
+                         if not manga_search.avoid_hit(ft[m.id], avoid_tokens)}
+
+    referenced, neighbours = manga_retrievers.similar_to(
+        db, title_hint, candidates, surviving_ids=surviving_ids,
+    )
+    if not referenced:
+        return [], (
+            f"manga 库里找不到名字像「{title_hint}」的作品。"
+            "可以贴更完整的标题、或试试关键词搜索（'类似 X 题材的'）。"
+        )
+    if not neighbours:
+        return [], (
+            f"找到了「{referenced.title}」，但暂时没生成它的语义画像，无法找类似作品。"
+            "去「内容画像」面板对它跑一次分析后再试。"
+        )
+
+    by_id = {m.id: m for m in candidates}
+    scored: list[dict] = []
+    for rank, (media_id, sim) in enumerate(neighbours):
+        media = by_id.get(media_id)
+        if not media:
+            continue
+        fused = sim * SIMILAR_TO_WEIGHT
+        prior = _prior_score(media, preferences)
+        scored.append({
+            "media": media,
+            "text_score": sim,
+            "prior": prior,
+            "matched_tags": [f"类似《{referenced.title[:30]}》"],
+            "fused": fused,
+            "bm25_rank": None,
+            "vec_rank": rank,
+            "score": fused + prior,
+        })
+    return scored, None
+
+
+def _route_browse(
+    preferences: dict,
+    candidates: list[models.Media],
+    avoid_tokens: list[str],
+) -> tuple[list[dict], Optional[str]]:
+    """No-query default: rating + favorite + freshness."""
+    ranks = manga_retrievers.browse(candidates, avoid_tokens)
+    if not ranks:
+        return [], "manga 库为空，或所有作品都被排除标签过滤掉了。"
+
+    by_id = {m.id: m for m in candidates}
+    scored: list[dict] = []
+    for media_id, retrieval_score in ranks:
+        media = by_id.get(media_id)
+        if not media:
+            continue
+        # Browse scores are already in prior-scale units, so we put them
+        # in `score` directly and leave fused=0 to indicate "no query".
+        scored.append({
+            "media": media,
+            "text_score": 0.0,
+            "prior": retrieval_score,
+            "matched_tags": [],
+            "fused": 0.0,
+            "bm25_rank": None,
+            "vec_rank": None,
+            "score": retrieval_score,
+        })
+    return scored, None
 
 
 def recommend_manga(
@@ -503,106 +800,35 @@ def recommend_manga(
     preferred_tags: Iterable[str],
 ) -> dict:
     preferences, ai_enabled, message = parse_preferences(query, avoid_tags, preferred_tags)
+    intent: str = preferences.get("intent") or "by_style"
 
-    positive_tokens = _query_tokens(preferences, "positive_terms")
     avoid_tokens = [t for t in _query_tokens(preferences, "avoid_terms") if _avoid_token_usable(t)]
 
-    rows = (
-        db.query(models.Media)
-        .filter(
-            models.Media.media_type == "manga",
-            models.Media.is_missing == False,  # noqa: E712
-            models.Media.duplicate_status.notin_(list(HIDDEN_DUPLICATE_STATUSES)),
-        )
-        .all()
-    )
+    candidates = manga_retrievers.visible_manga(db)
+    candidate_count_total = len(candidates)
 
-    field_tokens_by_id: dict[int, dict[str, set[str]]] = {
-        media.id: manga_search.build_field_tokens(media) for media in rows
-    }
-    idf = manga_search.compute_idf(field_tokens_by_id)
+    # ---- Route ----------------------------------------------------------
+    if intent == "by_author":
+        scored, err = _route_by_author(preferences, candidates, avoid_tokens)
+    elif intent == "similar_to":
+        scored, err = _route_similar_to(db, preferences, candidates, avoid_tokens)
+    elif intent == "browse":
+        scored, err = _route_browse(preferences, candidates, avoid_tokens)
+    else:  # by_style — also the down-route target when other intents have empty slots
+        scored, err = _route_by_style(preferences, candidates, avoid_tokens)
+        # If by_style had no content terms at all, gracefully fall back to browse.
+        if not scored and err is None:
+            scored, err = _route_browse(preferences, candidates, avoid_tokens)
+            intent = "browse"
+            preferences["intent"] = "browse"
 
-    # ---- BM25 pass + avoid filter ----------------------------------------
-    scored: list[dict] = []
-    for media in rows:
-        fields = field_tokens_by_id[media.id]
-        if avoid_tokens and manga_search.avoid_hit(fields, avoid_tokens):
-            continue
-        text_score, matched = manga_search.score_text_match(fields, positive_tokens, idf)
-        prior = _prior_score(media, preferences)
-        scored.append({
-            "media": media,
-            "text_score": text_score,
-            "prior": prior,
-            "matched_tags": matched,
-        })
+    if err:
+        return _empty_result(preferences, ai_enabled, candidate_count_total, err)
 
-    # ---- BM25 ranks (compute first so we can gate vector retrieval) ------
-    # BM25 contributes a rank only for items with text_score > 0 (no point
-    # giving a slot to "matched zero query tokens but happened to be in the
-    # candidate set").
-    bm25_ranked = sorted(
-        [item for item in scored if item["text_score"] > 0],
-        key=lambda x: x["text_score"],
-        reverse=True,
-    )
-    bm25_rank_by_id = {item["media"].id: idx for idx, item in enumerate(bm25_ranked)}
-
-    # ---- Vector pass (RAG semantic recall) -------------------------------
-    # Gated on BM25 producing at least one match. Rationale: vector is an
-    # *augmentation* over keyword retrieval, not an independent recall
-    # channel. When BM25 finds nothing, it's because the query refers to
-    # something not in the library — adding cosine-nearest neighbours just
-    # surfaces noise (e.g. asking for an author who isn't in the library
-    # previously returned five vaguely-cosine-adjacent strangers; the
-    # MiniLM-multilingual noise floor is too high on doujin-style
-    # titles to safely cold-start). Letting BM25 ground the relevance
-    # signal keeps the empty-result message from Phase 1 honest.
-    surviving_media = [item["media"] for item in scored]
-    if bm25_ranked:
-        vec_rank_by_id = _vector_ranks(preferences, surviving_media)
-    else:
-        vec_rank_by_id = {}
-
-    # ---- RRF fusion -------------------------------------------------------
-
-    for item in scored:
-        mid = item["media"].id
-        rrf = 0.0
-        if mid in bm25_rank_by_id:
-            rrf += 1.0 / (RRF_K + bm25_rank_by_id[mid] + 1)
-        if mid in vec_rank_by_id:
-            rrf += 1.0 / (RRF_K + vec_rank_by_id[mid] + 1)
-        item["fused"] = rrf * FUSION_WEIGHT
-        item["vec_rank"] = vec_rank_by_id.get(mid)
-        item["bm25_rank"] = bm25_rank_by_id.get(mid)
-        item["score"] = item["fused"] + item["prior"]
-
-    # ---- Sort + empty-result guard ---------------------------------------
-    # Sort by total score = fused + prior. Within matched_pool the prior can
-    # legitimately move things around (e.g. two items both matched 'hahakigi'
-    # equally well, but one is a 4-star favorite — that wins). Items with
-    # fused == 0 are about to be filtered out below when positive_tokens is
-    # present, so they can't shoulder past matched items via prior alone.
+    # ---- Sort by total score -------------------------------------------
     scored.sort(key=lambda item: item["score"], reverse=True)
 
-    if positive_tokens:
-        matched_pool = [item for item in scored if item["fused"] > 0]
-        if not matched_pool:
-            terms = ", ".join(_as_list(preferences.get("positive_terms"))[:3]) or query
-            return {
-                "recommendations": [],
-                "parsed_preferences": preferences,
-                "ai_enabled": ai_enabled,
-                "candidate_count": len(scored),
-                "message": (
-                    f"未在 manga 库中找到与「{terms}」相关的条目。"
-                    "可能这本不在库里，或作者名拼写不一致。"
-                    "也试试换关键词、或浏览其它作品。"
-                ),
-            }
-        scored = matched_pool
-
+    # ---- LLM rerank + diversity + response ------------------------------
     ai_reasons, ai_message = ai_rank_and_explain(query, scored, limit)
     if ai_message and not message:
         message = ai_message
