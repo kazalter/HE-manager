@@ -878,12 +878,6 @@ internal fun MediaGridTileV2(
                         size = 6.dp,
                         modifier = Modifier.align(Alignment.TopEnd)
                     )
-                    com.hemanager.mobile.ui.op.TypeChip(
-                        mediaType = item.mediaType,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(6.dp)
-                    )
                     if (item.favorite) {
                         Icon(
                             Icons.Default.Star,
