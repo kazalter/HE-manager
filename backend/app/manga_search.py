@@ -93,8 +93,13 @@ _STOPWORDS: frozenset[str] = frozenset({
     # zh — pronouns / determiners
     "我", "你", "他", "她", "它", "这", "那", "这个", "那个", "这种", "那种",
     "哪", "哪个", "什么", "怎么", "谁",
-    # ja — very common fillers
+    # ja — very common fillers + 1-char suffix particles that show up in
+    # almost every doujin tag/title ("〇〇系", "〇〇向", "〇〇風"). These are
+    # genre-suffix tokens, not content — leaving them in lets jieba splits
+    # like "治愈/系/明亮/温馨" produce a phantom "系" match on every manga
+    # with "やれやれ系" in its title.
     "おすすめ", "好き", "もの", "こと",
+    "系", "向", "派", "型", "風", "风",
     # en
     "want", "like", "recommend", "manga", "comic", "find", "show",
     "please", "give", "looking",
