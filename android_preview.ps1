@@ -105,14 +105,27 @@ function Resolve-Device($Adb) {
     if ($devices.Count -eq 0) {
         throw "No Android device found. Start Android Studio emulator or MuMu, then run this again."
     }
+    # Strict device pinning — never silently install on a different device than
+    # intended (CLAUDE.md "防双装" rule). Default targets the f* phone; emulators
+    # require an explicit -Device flag.
     if ($Device) {
         if ($devices -contains $Device) { return $Device }
-        throw "Requested device '$Device' was not found. Available: $($devices -join ', ')"
+        # Tolerate the f-device serial drifting if the requested id is itself
+        # an f-prefix one (HE Manager's primary phone format).
+        if ($Device -like "f*") {
+            $alt = @($devices | Where-Object { $_ -like "f*" })
+            if ($alt.Count -gt 0) {
+                Write-Host "Requested '$Device' not connected; using '$($alt[0])' instead." -ForegroundColor Yellow
+                return $alt[0]
+            }
+        }
+        throw "Requested device '$Device' not connected. Available: $($devices -join ', ')"
     }
-    if ($devices.Count -gt 1) {
-        Write-Host "Multiple devices found. Using $($devices[0]). Pass -Device <id> to choose another."
-    }
-    return @($devices)[0]
+    # No -Device flag: refuse to pick anything that is not the f* phone, so an
+    # attached emulator or "hbl…" device never gets installed on by accident.
+    $preferred = @($devices | Where-Object { $_ -like "f*" })
+    if ($preferred.Count -gt 0) { return $preferred[0] }
+    throw "No 'f*' phone connected. Pass -Device <id> to target an emulator or other device explicitly. Available: $($devices -join ', ')"
 }
 
 function Invoke-Preview {
@@ -123,6 +136,12 @@ function Invoke-Preview {
         $java = Resolve-JavaHome
         $env:JAVA_HOME = $java
         $env:PATH = (Join-Path $java "bin") + ";" + $env:PATH
+
+        # Hard-pin install to the chosen device. Gradle's injected serial is
+        # not always honored when multiple devices are attached (that caused
+        # the double install — same fix as android_release.ps1); ANDROID_SERIAL
+        # forces every adb call (incl. Gradle's installDebug) to this one device.
+        $env:ANDROID_SERIAL = $target
 
         Write-Step "Building and installing debug app on $target"
         Push-Location $AndroidDir

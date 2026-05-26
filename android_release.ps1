@@ -111,20 +111,30 @@ function Resolve-Device($Adb) {
     if ($devices.Count -eq 0) {
         $devices = Try-Connect-Mumu $Adb
     }
-    # Never target the secondary "hbl…" device — only the primary "f…" phone.
-    $devices = @($devices | Where-Object { $_ -notlike "hbl*" })
     if ($devices.Count -eq 0) {
-        throw "No usable Android device found (the 'hbl…' device is excluded). Start the intended device, then run this again."
+        throw "No Android device found. Start the intended device, then run this again."
     }
-    if ($Device -and ($devices -contains $Device)) { return $Device }
-    # Requested id absent (the f-device serial can change) — prefer any "f…"
-    # device before falling back, instead of failing hard.
+    # Strict device pinning — never silently install on a different device than
+    # intended (CLAUDE.md "防双装" rule). Default targets the f* phone; emulators
+    # and "hbl…" devices require an explicit -Device flag.
+    if ($Device) {
+        if ($devices -contains $Device) { return $Device }
+        # Tolerate the f-device serial drifting if the requested id is itself
+        # an f-prefix one (HE Manager's primary phone format).
+        if ($Device -like "f*") {
+            $alt = @($devices | Where-Object { $_ -like "f*" })
+            if ($alt.Count -gt 0) {
+                Write-Host "Requested '$Device' not connected; using '$($alt[0])' instead." -ForegroundColor Yellow
+                return $alt[0]
+            }
+        }
+        throw "Requested device '$Device' not connected. Available: $($devices -join ', ')"
+    }
+    # No -Device flag: refuse to pick anything that is not the f* phone, so an
+    # attached emulator or "hbl…" device never gets installed on by accident.
     $preferred = @($devices | Where-Object { $_ -like "f*" })
     if ($preferred.Count -gt 0) { return $preferred[0] }
-    if ($devices.Count -gt 1) {
-        Write-Host "Multiple devices found (no 'f…' match). Using $($devices[0]). Pass -Device <id> to choose another."
-    }
-    return @($devices)[0]
+    throw "No 'f*' phone connected. Pass -Device <id> to target an emulator or other device explicitly. Available: $($devices -join ', ')"
 }
 
 function Invoke-Release {
