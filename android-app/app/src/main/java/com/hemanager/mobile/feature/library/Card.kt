@@ -192,6 +192,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.channels.Channel
@@ -261,7 +262,7 @@ internal fun MediaCardV2(
     SwipeRevealCard(
         itemKey = "large-${item.id}",
         controller = controller,
-        shape = RoundedCornerShape(28.dp),
+        shape = com.hemanager.mobile.ui.theme.CutCornerShape(14.dp),
         actions = { progress ->
             QuickActionsPaneV2(
                 item = item,
@@ -270,132 +271,140 @@ internal fun MediaCardV2(
             )
         }
     ) {
-        Box {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer {
-                        scaleX = cardScale
-                        scaleY = cardScale
-                    }
-                    .clickable(interactionSource = interactionSource, indication = null, onClick = tapWhileSomethingOpen),
-                shape = RoundedCornerShape(28.dp),
-                color = Color.White.copy(alpha = 0.062f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = if (pressed) 0.16f else 0.085f))
-            ) {
-                Column(modifier = Modifier.padding(8.dp)) {
-                    Box {
-                        RemoteCoverV2(
-                            url = coverUrl(serverUrl, token, item),
-                            label = mediaTypeLabelV2(item.mediaType),
-                            accent = accent,
-                            decodeWidthPx = 420,
-                            decodeHeightPx = 280,
+        // HE OP CardLargeOp — cut 14 + hairline + 封面 16:10
+        com.hemanager.mobile.ui.op.AngularPanel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    scaleX = cardScale
+                    scaleY = cardScale
+                }
+                .clickable(interactionSource = interactionSource, indication = null, onClick = tapWhileSomethingOpen),
+            cut = 14.dp,
+            background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Column {
+                // 封面区
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1.60f)
+                ) {
+                    RemoteCoverV2(
+                        url = coverUrl(serverUrl, token, item),
+                        label = mediaTypeLabelV2(item.mediaType),
+                        accent = accent,
+                        decodeWidthPx = 420,
+                        decodeHeightPx = 280,
+                        cutDp = 0.dp,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    // HUD 角标（隐藏下方两角，因为下面是信息条）
+                    com.hemanager.mobile.ui.op.HudBrackets(
+                        modifier = Modifier.fillMaxSize(),
+                        inset = 8.dp,
+                        length = 12.dp,
+                        hideCorners = setOf(
+                            com.hemanager.mobile.ui.theme.Corner.BL,
+                            com.hemanager.mobile.ui.theme.Corner.BR,
+                        ),
+                    )
+                    com.hemanager.mobile.ui.op.TypeChip(
+                        mediaType = item.mediaType,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(10.dp)
+                    )
+                    if (item.favorite) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "收藏",
+                            tint = com.hemanager.mobile.ui.theme.HeColors.Yellow,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .aspectRatio(1.50f)
-                        )
-                        StatusPillV2(
-                            label = mediaTypeLabelV2(item.mediaType),
-                            color = accent,
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
+                                .align(Alignment.TopEnd)
                                 .padding(10.dp)
-                        )
-                        if (item.mediaType == "manga" && item.pageCount > 0) {
-                            Surface(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(10.dp),
-                                shape = RoundedCornerShape(999.dp),
-                                color = Color(0xCC0B1020),
-                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
-                            ) {
-                                Text(
-                                    "${item.pageCount}P",
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
-                        }
-                        FloatingPlayButtonV2(
-                            label = if (item.viewStatus == "viewing") "继续" else "播放",
-                            onClick = { playWhileSomethingOpen(false) },
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(10.dp)
+                                .size(14.dp),
                         )
                     }
+                    if (item.mediaType == "manga" && item.pageCount > 0) {
+                        com.hemanager.mobile.ui.op.CodeChip(
+                            text = "${item.pageCount}P",
+                            color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(10.dp)
+                        )
+                    }
+                    FloatingPlayButtonV2(
+                        label = if (item.viewStatus == "viewing") "RESUME" else "PLAY",
+                        onClick = { playWhileSomethingOpen(false) },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp)
+                    )
+                }
 
-                    Column(
-                        modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 12.dp, bottom = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (item.favorite) {
-                                Icon(
-                                    Icons.Default.Star,
-                                    contentDescription = "收藏",
-                                    tint = Color(0xFFF6C46B),
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .padding(end = 4.dp)
-                                )
-                            }
-                            Text(
-                                item.title,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Black,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (item.viewStatus == "viewed") {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = "已看完",
-                                    tint = Color(0xFF58E6C2),
-                                    modifier = Modifier
-                                        .size(18.dp)
-                                        .padding(start = 6.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            metaInlineV2(item),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                // 信息条
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        com.hemanager.mobile.ui.op.CodeChip(
+                            text = fakeCode(item),
+                            color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
                         )
-                        AnimatedVisibility(
-                            visible = progress != null,
-                            enter = fadeIn(tween(180)) + expandVertically(),
-                            exit = fadeOut(tween(160)) + shrinkVertically()
-                        ) {
-                            LinearProgressIndicator(
-                                progress = { progress ?: 0f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(RoundedCornerShape(999.dp)),
-                                color = progressColorV2(item),
-                                trackColor = Color.White.copy(alpha = 0.075f)
+                        Spacer(Modifier.weight(1f))
+                        when (item.viewStatus) {
+                            "viewing" -> StatusPillV2(
+                                label = "ONGOING",
+                                color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                            )
+                            "viewed" -> StatusPillV2(
+                                label = "COMPLETED",
+                                color = com.hemanager.mobile.ui.theme.HeColors.Online,
                             )
                         }
-                        if (item.missing || (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed"))) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (item.missing) StatusPillV2("文件缺失", Color(0xFFFF8CA3))
-                                if (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed")) {
-                                    ActionPillV2("从头观看", MaterialTheme.colorScheme.primary) {
-                                        playWhileSomethingOpen(true)
-                                    }
+                    }
+                    Text(
+                        item.title,
+                        color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                        fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        lineHeight = 22.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        metaInlineV2(item),
+                        color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                        fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                        fontSize = 10.sp,
+                        letterSpacing = 0.4.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    AnimatedVisibility(
+                        visible = progress != null,
+                        enter = fadeIn(tween(180)) + expandVertically(),
+                        exit = fadeOut(tween(160)) + shrinkVertically()
+                    ) {
+                        com.hemanager.mobile.ui.op.ProgressO(
+                            value = progress ?: 0f,
+                            height = 2.dp,
+                        )
+                    }
+                    if (item.missing || (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed"))) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (item.missing) TinyBadgeV2("MISSING", com.hemanager.mobile.ui.theme.HeColors.OpDanger)
+                            if (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed")) {
+                                ActionPillV2("RESTART", com.hemanager.mobile.ui.theme.HeColors.OpWhite) {
+                                    playWhileSomethingOpen(true)
                                 }
                             }
                         }
@@ -836,7 +845,7 @@ internal fun MediaGridTileV2(
     // Outer Box so the long-press overlay can match the FULL tile bounds
     // (cover + title + meta), not just the cover image.
     Box(modifier = modifier) {
-        Surface(
+        com.hemanager.mobile.ui.op.AngularPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(
@@ -847,11 +856,11 @@ internal fun MediaGridTileV2(
                     },
                     onLongClick = { controller.open(tileKey) }
                 ),
-            shape = RoundedCornerShape(24.dp),
-            color = Color.White.copy(alpha = 0.052f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.075f))
+            cut = 10.dp,
+            background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+            contentPadding = PaddingValues(4.dp),
         ) {
-            Column(modifier = Modifier.padding(6.dp)) {
+            Column {
                 Box {
                     RemoteCoverV2(
                         url = coverUrl(serverUrl, token, item),
@@ -859,46 +868,60 @@ internal fun MediaGridTileV2(
                         accent = accent,
                         decodeWidthPx = 220,
                         decodeHeightPx = 320,
+                        cutDp = 6.dp,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .aspectRatio(0.70f)
+                            .aspectRatio(0.74f)
                     )
-                    TinyBadgeV2(
-                        label = mediaTypeLabelV2(item.mediaType),
-                        color = accent,
+                    // TR 6dp 黄角封口
+                    com.hemanager.mobile.ui.op.YellowCornerSeal(
+                        size = 6.dp,
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    )
+                    com.hemanager.mobile.ui.op.TypeChip(
+                        mediaType = item.mediaType,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(7.dp)
+                            .padding(6.dp)
                     )
+                    if (item.favorite) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "收藏",
+                            tint = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(6.dp)
+                                .size(11.dp)
+                        )
+                    }
                     if (progress != null) {
-                        LinearProgressIndicator(
-                            progress = { progress },
+                        com.hemanager.mobile.ui.op.ProgressO(
+                            value = progress,
+                            height = 2.dp,
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(999.dp)),
-                            color = progressColorV2(item),
-                            trackColor = Color.Black.copy(alpha = 0.38f)
+                                .fillMaxWidth(),
                         )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(7.dp))
                 Text(
                     item.title,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Black,
+                    color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                    fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.5.sp,
+                    lineHeight = 14.sp,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 2.dp),
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    metaInlineV2(item),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                Spacer(Modifier.height(3.dp))
+                com.hemanager.mobile.ui.op.CodeChip(
+                    text = fakeCode(item),
+                    fontSize = 8.5.sp,
+                    modifier = Modifier.padding(horizontal = 2.dp),
                 )
             }
         }

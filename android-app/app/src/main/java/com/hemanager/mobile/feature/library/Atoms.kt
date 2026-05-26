@@ -186,7 +186,9 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -242,31 +244,29 @@ internal fun BackToTopButtonV2(onClick: () -> Unit, modifier: Modifier = Modifie
         label = "backToTopScale"
     )
 
-    Surface(
+    Box(
         modifier = modifier
-            .size(48.dp)
+            .size(46.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
+            .clip(CircleShape)
+            .background(com.hemanager.mobile.ui.theme.HeColors.Ink)
+            .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineHi, CircleShape)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
             ),
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-        contentColor = MaterialTheme.colorScheme.primary,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-        shadowElevation = 10.dp
+        contentAlignment = Alignment.Center
     ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(
-                Icons.Default.KeyboardArrowUp,
-                contentDescription = "Back to top",
-                modifier = Modifier.size(28.dp)
-            )
-        }
+        Icon(
+            Icons.Default.KeyboardArrowUp,
+            contentDescription = "Back to top",
+            tint = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 
@@ -284,7 +284,7 @@ internal fun MediaDetailRowV2(
     SwipeRevealCard(
         itemKey = "detail-${item.id}",
         controller = controller,
-        shape = RoundedCornerShape(24.dp),
+        shape = com.hemanager.mobile.ui.theme.CutCornerShape(8.dp),
         actionsWidth = 156.dp,
         actions = { progress ->
             QuickActionsPaneV2(
@@ -294,105 +294,119 @@ internal fun MediaDetailRowV2(
             )
         }
     ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = {
-                if (controller.openKey != null) controller.close() else onOpen(false)
-            }),
-        shape = RoundedCornerShape(24.dp),
-        color = Color.White.copy(alpha = 0.056f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.078f))
-    ) {
-        Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+        com.hemanager.mobile.ui.op.AngularPanel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = {
+                    if (controller.openKey != null) controller.close() else onOpen(false)
+                }),
+            cut = 10.dp,
+            background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+            contentPadding = PaddingValues(10.dp),
         ) {
-            RemoteCoverV2(
-                url = coverUrl(serverUrl, token, item),
-                label = mediaTypeLabelV2(item.mediaType),
-                accent = accent,
-                decodeWidthPx = 156,
-                decodeHeightPx = 216,
-                modifier = Modifier
-                    .width(78.dp)
-                    .height(108.dp)
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier
+                    .width(58.dp)
+                    .height(78.dp)
                 ) {
-                    TinyBadgeV2(mediaTypeLabelV2(item.mediaType), accent)
-                    mediaMetaChipsV2(item).take(2).forEach { chip ->
-                        TinyBadgeV2(chip, MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    if (item.favorite) TinyBadgeV2("收藏", Color(0xFFF6C46B))
-                    if (item.missing) TinyBadgeV2("缺失", Color(0xFFFF8CA3))
-                }
-                Text(
-                    item.title,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (progress != null) {
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(5.dp)
-                            .clip(RoundedCornerShape(999.dp)),
-                        color = progressColorV2(item),
-                        trackColor = Color.White.copy(alpha = 0.075f)
+                    RemoteCoverV2(
+                        url = coverUrl(serverUrl, token, item),
+                        label = mediaTypeLabelV2(item.mediaType),
+                        accent = accent,
+                        decodeWidthPx = 156,
+                        decodeHeightPx = 216,
+                        cutDp = 5.dp,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    // TR 5dp 黄角封口
+                    com.hemanager.mobile.ui.op.YellowCornerSeal(
+                        size = 5.dp,
+                        modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        com.hemanager.mobile.ui.op.CodeChip(
+                            text = fakeCode(item),
+                            color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                        )
+                        if (item.favorite) {
+                            Icon(
+                                Icons.Default.Star,
+                                contentDescription = "收藏",
+                                tint = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                        if (item.missing) {
+                            TinyBadgeV2("MISSING", com.hemanager.mobile.ui.theme.HeColors.OpDanger)
+                        }
+                    }
                     Text(
-                        progressTextV2(item),
-                        modifier = Modifier.weight(1f),
-                        color = progressColorV2(item),
-                        style = MaterialTheme.typography.labelMedium,
+                        item.title,
+                        color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                        fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                         fontWeight = FontWeight.Bold,
-                        maxLines = 1,
+                        fontSize = 14.sp,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed")) {
-                        ActionPillV2("从头", MaterialTheme.colorScheme.primary) {
-                            if (controller.openKey != null) controller.close() else onOpen(true)
+                    if (progress != null) {
+                        com.hemanager.mobile.ui.op.ProgressO(
+                            value = progress,
+                            height = 2.dp,
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            progressTextV2(item),
+                            modifier = Modifier.weight(1f),
+                            color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                            fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                            fontSize = 10.sp,
+                            letterSpacing = 0.3.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (item.mediaType == "manga" && (item.viewStatus == "viewing" || item.viewStatus == "viewed")) {
+                            ActionPillV2("RESTART", com.hemanager.mobile.ui.theme.HeColors.OpWhite) {
+                                if (controller.openKey != null) controller.close() else onOpen(true)
+                            }
                         }
                     }
                 }
             }
         }
     }
-    }
 }
 
 @Composable
 internal fun TinyBadgeV2(label: String, color: Color, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.20f))
+    // HE OP — 小切角黑底，文字色不强（用传入色但 alpha 降一档）
+    Box(
+        modifier = modifier
+            .clip(com.hemanager.mobile.ui.theme.CutCornerShape(4.dp))
+            .background(Color.Black.copy(alpha = 0.65f))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
     ) {
         Text(
             label,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
             color = color,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Black,
-            maxLines = 1
+            fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.6.sp,
+            maxLines = 1,
         )
     }
 }
@@ -404,31 +418,27 @@ internal fun RemoteCoverV2(
     accent: Color,
     decodeWidthPx: Int = 240,
     decodeHeightPx: Int = 340,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    cutDp: Dp = 8.dp,
 ) {
     val decodeWidth = remember(decodeWidthPx) { coverDecodeBucketPx(decodeWidthPx) }
     val decodeHeight = remember(decodeHeightPx) { coverDecodeBucketPx(decodeHeightPx) }
+    val shape = com.hemanager.mobile.ui.theme.CutCornerShape(cutDp)
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(24.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        accent.copy(alpha = 0.32f),
-                        Color(0xFF101623),
-                        Color(0xFF090C14)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.085f), RoundedCornerShape(24.dp)),
+            .clip(shape)
+            .background(com.hemanager.mobile.ui.theme.HeColors.Panel),
         contentAlignment = Alignment.Center
     ) {
+        // 占位文字（图未加载时显示）
         Text(
             label,
-            color = Color.White.copy(alpha = 0.72f),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Black
+            color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteFaint,
+            fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
+            fontWeight = FontWeight.Bold,
+            fontSize = 11.sp,
+            letterSpacing = 2.sp,
         )
         CoilCoverImage(
             url = url,
@@ -437,16 +447,15 @@ internal fun RemoteCoverV2(
             decodeHeightPx = decodeHeight,
             modifier = Modifier.fillMaxSize()
         )
+        // 底部 ink 渐变，给文字制造对比；上半部分基本透明
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(
-                            Color.Black.copy(alpha = 0.02f),
-                            Color.Black.copy(alpha = 0.16f),
-                            Color.Black.copy(alpha = 0.66f)
-                        )
+                        0f   to Color.Transparent,
+                        0.5f to Color.Transparent,
+                        1f   to com.hemanager.mobile.ui.theme.HeColors.Ink.copy(alpha = 0.78f),
                     )
                 )
         )
@@ -455,49 +464,62 @@ internal fun RemoteCoverV2(
 
 @Composable
 internal fun FloatingPlayButtonV2(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.94f),
-        contentColor = Color(0xFF070A12),
-        shadowElevation = 8.dp
+    // HE OP — 黄底切角 + Oxanium Bold 大写
+    val shape = com.hemanager.mobile.ui.theme.CutCornerShape(8.dp)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(com.hemanager.mobile.ui.theme.HeColors.Yellow)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Black)
-        }
+        Icon(
+            Icons.Default.PlayArrow,
+            contentDescription = null,
+            tint = com.hemanager.mobile.ui.theme.HeColors.OnYellow,
+            modifier = Modifier.size(14.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            label,
+            color = com.hemanager.mobile.ui.theme.HeColors.OnYellow,
+            fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
+            fontWeight = FontWeight.Bold,
+            fontSize = 11.sp,
+            letterSpacing = 1.4.sp,
+        )
     }
 }
 
 @Composable
 internal fun EmptyStateV2() {
-    GlassPanelV2 {
+    com.hemanager.mobile.ui.op.AngularPanel(
+        modifier = Modifier.fillMaxWidth(),
+        cut = 14.dp,
+        background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+        contentPadding = PaddingValues(vertical = 36.dp, horizontal = 18.dp),
+    ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 42.dp, horizontal = 10.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("没有匹配的媒体", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-            Spacer(Modifier.height(7.dp))
+            com.hemanager.mobile.ui.op.Slash(cn = "无匹配", en = "EMPTY")
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "没有匹配的媒体",
+                color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                fontWeight = FontWeight.Black,
+                fontSize = 18.sp
+            )
+            Spacer(Modifier.height(8.dp))
             Text(
                 "换个关键词、类型或状态再探索一下",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
+                color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                fontWeight = FontWeight.Medium,
+                fontSize = 12.5.sp,
                 textAlign = TextAlign.Center
             )
         }
@@ -506,60 +528,64 @@ internal fun EmptyStateV2() {
 
 @Composable
 internal fun ErrorPanelV2(error: String, loading: Boolean, onRetry: () -> Unit) {
-    Surface(
+    com.hemanager.mobile.ui.op.AngularPanel(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0xFFFF8CA3).copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, Color(0xFFFF8CA3).copy(alpha = 0.24f))
+        cut = 10.dp,
+        background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
     ) {
-        Row(
-            modifier = Modifier.padding(15.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("加载失败", color = Color(0xFFFFB7C4), fontWeight = FontWeight.Black)
+                Text(
+                    "// ERR",
+                    color = com.hemanager.mobile.ui.theme.HeColors.OpDanger,
+                    fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 10.sp,
+                    letterSpacing = 1.5.sp,
+                )
+                Spacer(Modifier.height(4.dp))
                 Text(
                     error,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
+                    color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
+                    fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                    fontSize = 11.sp,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Button(
+            com.hemanager.mobile.ui.op.GhostCta(
+                text = "RETRY",
                 onClick = onRetry,
-                enabled = !loading,
-                shape = RoundedCornerShape(999.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF8CA3), contentColor = Color(0xFF220912)),
-                contentPadding = PaddingValues(horizontal = 15.dp, vertical = 9.dp)
-            ) {
-                Text("重试", fontWeight = FontWeight.Bold)
-            }
+                size = com.hemanager.mobile.ui.op.CtaSize.Small,
+            )
         }
     }
 }
 
 @Composable
 internal fun LoadingLineV2() {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = Color.White.copy(alpha = 0.055f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.085f))
+    com.hemanager.mobile.ui.op.AngularPanel(
+        modifier = Modifier.fillMaxWidth(),
+        cut = 8.dp,
+        background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 15.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                color = MaterialTheme.colorScheme.primary,
-                strokeWidth = 2.dp
+                modifier = Modifier.size(14.dp),
+                color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                strokeWidth = 1.5.dp,
             )
-            Spacer(Modifier.width(11.dp))
-            Text("正在刷新媒体库", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "// STREAM · 同步媒体库",
+                color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
+                fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                fontSize = 11.sp,
+                letterSpacing = 0.5.sp,
+            )
         }
     }
 }
@@ -568,36 +594,34 @@ internal fun LoadingLineV2() {
 internal fun LoadingCardSkeletonV2(index: Int) {
     val transition = rememberInfiniteTransition(label = "skeletonV2$index")
     val alpha by transition.animateFloat(
-        initialValue = 0.20f,
-        targetValue = 0.52f,
+        initialValue = 0.10f,
+        targetValue = 0.30f,
         animationSpec = infiniteRepeatable(
             animation = tween(860, delayMillis = index * 90, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "skeletonV2Alpha$index"
     )
-    Surface(
+    com.hemanager.mobile.ui.op.AngularPanel(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        color = Color.White.copy(alpha = 0.052f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.075f))
+        cut = 14.dp,
+        background = com.hemanager.mobile.ui.theme.HeColors.Panel,
+        contentPadding = PaddingValues(10.dp),
     ) {
-        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SkeletonBlockV2(
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1.50f),
+                Modifier.fillMaxWidth().aspectRatio(1.55f),
                 alpha
             )
             Column(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SkeletonBlockV2(Modifier.fillMaxWidth(0.78f).height(22.dp), alpha)
-                SkeletonBlockV2(Modifier.fillMaxWidth().height(5.dp), alpha * 0.68f)
+                SkeletonBlockV2(Modifier.fillMaxWidth(0.62f).height(18.dp), alpha)
+                SkeletonBlockV2(Modifier.fillMaxWidth().height(3.dp), alpha * 0.6f)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SkeletonBlockV2(Modifier.width(64.dp).height(28.dp), alpha * 0.78f)
-                    SkeletonBlockV2(Modifier.width(78.dp).height(28.dp), alpha * 0.62f)
+                    SkeletonBlockV2(Modifier.width(54.dp).height(20.dp), alpha * 0.7f)
+                    SkeletonBlockV2(Modifier.width(74.dp).height(20.dp), alpha * 0.55f)
                 }
             }
         }
@@ -608,16 +632,8 @@ internal fun LoadingCardSkeletonV2(index: Int) {
 internal fun SkeletonBlockV2(modifier: Modifier, alpha: Float) {
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(22.dp))
-            .background(
-                Brush.horizontalGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.045f),
-                        MaterialTheme.colorScheme.primary.copy(alpha = alpha * 0.22f),
-                        Color.White.copy(alpha = 0.045f)
-                    )
-                )
-            )
+            .clip(com.hemanager.mobile.ui.theme.CutCornerShape(6.dp))
+            .background(com.hemanager.mobile.ui.theme.HeColors.OpWhite.copy(alpha = alpha))
     )
 }
 
@@ -691,56 +707,61 @@ internal fun IconPillV2(
 
 @Composable
 internal fun StatusPillV2(label: String, color: Color, modifier: Modifier = Modifier) {
-    Surface(
+    // HE OP — 用 ● 圆点 + ALL-CAPS Oxanium，不再做药丸 surface
+    Row(
         modifier = modifier,
-        shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.22f))
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(
+            Modifier
+                .size(5.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(Modifier.width(5.dp))
         Text(
             label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             color = color,
-            style = MaterialTheme.typography.labelSmall,
+            fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
             fontWeight = FontWeight.Bold,
-            maxLines = 1
+            fontSize = 9.5.sp,
+            letterSpacing = 1.4.sp,
+            maxLines = 1,
         )
     }
 }
 
 @Composable
 internal fun SubtleChipV2(label: String) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = Color.White.copy(alpha = 0.055f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.070f))
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1
-        )
-    }
+    Text(
+        label,
+        color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+        fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+        fontWeight = FontWeight.Medium,
+        fontSize = 10.sp,
+        letterSpacing = 0.4.sp,
+        maxLines = 1,
+    )
 }
 
 @Composable
 internal fun ActionPillV2(label: String, color: Color, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = color.copy(alpha = 0.13f),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.22f))
+    Box(
+        modifier = Modifier
+            .clip(com.hemanager.mobile.ui.theme.CutCornerShape(6.dp))
+            .background(Color.Transparent)
+            .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineMid, com.hemanager.mobile.ui.theme.CutCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
         Text(
             label,
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-            color = color,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1
+            color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+            fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.sp,
+            letterSpacing = 1.2.sp,
+            maxLines = 1,
         )
     }
 }
@@ -838,12 +859,13 @@ internal fun DrawerDotV2(color: Color) {
 
 @Composable
 internal fun AppBackgroundBrushV2(): Brush {
+    // HE OP — 顶部极淡 amber bloom 渐变到 Ink，模拟工业终端的环境光感
     return Brush.radialGradient(
-        listOf(
-            Color(0xFF17213C),
-            Color(0xFF0B1020),
-            Color(0xFF070A12)
+        colorStops = arrayOf(
+            0f   to com.hemanager.mobile.ui.theme.HeColors.Yellow.copy(alpha = 0.024f),
+            0.4f to com.hemanager.mobile.ui.theme.HeColors.Ink,
+            1f   to com.hemanager.mobile.ui.theme.HeColors.Void
         ),
-        radius = 1250f
+        radius = 1400f
     )
 }

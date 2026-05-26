@@ -494,6 +494,20 @@ internal fun typeLabel(type: String?): String {
     }
 }
 
+/** HE OP 装饰代码：VID-A001 / MNG-X042 / ... 仅用于卡片角标装饰，不参与任何逻辑。 */
+internal fun fakeCode(item: MediaItem): String {
+    val prefix = when (item.mediaType) {
+        "video" -> "VID"
+        "manga" -> "MNG"
+        "image" -> "IMG"
+        "audio" -> "AUD"
+        else -> "MED"
+    }
+    val letter = "AVXM"[(item.id % 4 + 4) % 4]
+    val num = item.id.toString().padStart(3, '0').takeLast(3)
+    return "$prefix-$letter$num"
+}
+
 internal fun formatDuration(seconds: Int): String {
     val total = seconds.coerceAtLeast(0)
     val hours = total / 3600

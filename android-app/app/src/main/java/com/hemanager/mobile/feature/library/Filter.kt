@@ -192,6 +192,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.channels.Channel
@@ -241,42 +242,48 @@ internal fun LibraryHeaderV2(
     onMenu: () -> Unit,
     onRefresh: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        IconPillV2(onClick = onMenu, contentDescription = "打开侧边栏") {
-            Icon(Icons.Default.Menu, contentDescription = null)
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                "媒体库",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onBackground
+    // HE OP TopHud：菜单 + Slash 标识 + viewMode + refresh
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            com.hemanager.mobile.ui.op.IconBtn4(
+                icon = Icons.Default.Menu,
+                contentDescription = "打开侧边栏",
+                onClick = onMenu,
             )
-            Text(
-                "继续探索你的媒体内容",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (!galleryMode) {
-            ViewModeIconButtonV2(viewMode = viewMode, onSelect = onViewModeSelected)
-            Spacer(Modifier.width(8.dp))
-        }
-        IconPillV2(onClick = onRefresh, enabled = !loading, contentDescription = "刷新") {
-            if (loading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                com.hemanager.mobile.ui.op.Slash(cn = "媒体库", en = "Library")
+                Spacer(Modifier.height(4.dp))
+                com.hemanager.mobile.ui.op.OpTitle(
+                    cn = "媒体库",
+                    en = "LIBRARY · OPERATOR ARCHIVE",
+                    sizeSp = 22.sp,
                 )
+            }
+            if (!galleryMode) {
+                ViewModeIconButtonV2(viewMode = viewMode, onSelect = onViewModeSelected)
+                Spacer(Modifier.width(8.dp))
+            }
+            if (loading) {
+                Box(
+                    modifier = Modifier.size(36.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 1.5.dp,
+                        color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                    )
+                }
             } else {
-                Icon(Icons.Default.Refresh, contentDescription = null)
+                com.hemanager.mobile.ui.op.IconBtn4(
+                    icon = Icons.Default.Refresh,
+                    contentDescription = "刷新",
+                    onClick = onRefresh,
+                )
             }
         }
     }
@@ -290,48 +297,37 @@ internal fun ViewModeIconButtonV2(
     val ordered = listOf(LibraryViewMode.Large, LibraryViewMode.Grid, LibraryViewMode.Detail)
     val currentIndex = ordered.indexOf(viewMode).coerceAtLeast(0)
     var menuOpen by remember { mutableStateOf(false) }
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.94f else 1f,
-        animationSpec = tween(120, easing = FastOutSlowInEasing),
-        label = "viewModeBtnScale"
-    )
+    // HE OP IconBtn4 — 黑底 hairline 圆形 + 长按弹切换菜单
     Box {
-        Surface(
+        Box(
             modifier = Modifier
-                .size(46.dp)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(com.hemanager.mobile.ui.theme.HeColors.Ink)
+                .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineMid, CircleShape)
                 .pointerInput(viewMode) {
                     detectTapGestures(
                         onTap = { onSelect(ordered[(currentIndex + 1) % ordered.size]) },
                         onLongPress = { menuOpen = true }
                     )
                 },
-            shape = CircleShape,
-            color = Color.White.copy(alpha = if (pressed) 0.12f else 0.065f),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
+            contentAlignment = Alignment.Center,
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                AnimatedContent(
-                    targetState = viewMode,
-                    transitionSpec = {
-                        (slideInHorizontally(tween(160)) { it / 2 } + fadeIn(tween(160))) togetherWith
-                            (slideOutHorizontally(tween(160)) { -it / 2 } + fadeOut(tween(160))) using
-                            SizeTransform(clip = false)
-                    },
-                    label = "viewModeIcon"
-                ) { mode ->
-                    Icon(
-                        viewModeIconV2(mode),
-                        contentDescription = "切换视图：${viewModeLabelV2(mode)}",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+            AnimatedContent(
+                targetState = viewMode,
+                transitionSpec = {
+                    (slideInHorizontally(tween(160)) { it / 2 } + fadeIn(tween(160))) togetherWith
+                        (slideOutHorizontally(tween(160)) { -it / 2 } + fadeOut(tween(160))) using
+                        SizeTransform(clip = false)
+                },
+                label = "viewModeIcon"
+            ) { mode ->
+                Icon(
+                    viewModeIconV2(mode),
+                    contentDescription = "切换视图：${viewModeLabelV2(mode)}",
+                    tint = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
         DropdownMenu(
@@ -340,12 +336,19 @@ internal fun ViewModeIconButtonV2(
         ) {
             ordered.forEach { mode ->
                 DropdownMenuItem(
-                    text = { Text(viewModeLabelV2(mode), fontWeight = if (mode == viewMode) FontWeight.Black else FontWeight.SemiBold) },
+                    text = {
+                        Text(
+                            viewModeLabelV2(mode),
+                            fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                            fontWeight = if (mode == viewMode) FontWeight.Bold else FontWeight.Medium,
+                        )
+                    },
                     leadingIcon = {
                         Icon(
                             viewModeIconV2(mode),
                             contentDescription = null,
-                            tint = if (mode == viewMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = if (mode == viewMode) com.hemanager.mobile.ui.theme.HeColors.Yellow
+                                   else com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft
                         )
                     },
                     onClick = {
@@ -387,44 +390,59 @@ internal fun SearchAndFilterPanelV2(
     val activeCount = listOf(selectedValue, selectedStatusValue).count { it.isNotBlank() }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedTextField(
-            value = search,
-            onValueChange = onSearchChange,
+        // HE OP 搜索框：切角 + hairline border + GeistMono 输入 + 黄色光标
+        val searchShape = com.hemanager.mobile.ui.theme.CutCornerShape(8.dp)
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 52.dp),
-            singleLine = true,
-            shape = RoundedCornerShape(20.dp),
-            placeholder = {
-                Text(
-                    "搜索标题、作者、文件夹",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            trailingIcon = {
-                AnimatedVisibility(visible = search.isNotBlank()) {
-                    IconButton(onClick = { onSearchChange("") }) {
-                        Icon(Icons.Default.Close, contentDescription = "清除搜索", modifier = Modifier.size(18.dp))
-                    }
-                }
-            },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                cursorColor = MaterialTheme.colorScheme.primary,
-                focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.76f),
-                unfocusedBorderColor = Color.White.copy(alpha = 0.10f),
-                focusedContainerColor = Color.White.copy(alpha = 0.080f),
-                unfocusedContainerColor = Color.White.copy(alpha = 0.052f),
-                focusedLeadingIconColor = MaterialTheme.colorScheme.primary,
-                unfocusedLeadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                focusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant
+                .heightIn(min = 46.dp)
+                .clip(searchShape)
+                .background(com.hemanager.mobile.ui.theme.HeColors.Panel)
+                .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineMid, searchShape)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                modifier = Modifier.size(16.dp),
             )
-        )
+            Spacer(Modifier.width(10.dp))
+            Box(modifier = Modifier.weight(1f)) {
+                if (search.isBlank()) {
+                    Text(
+                        "搜索标题、作者、文件夹",
+                        color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                        fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = search,
+                    onValueChange = onSearchChange,
+                    singleLine = true,
+                    textStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+                        color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                        fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                        fontSize = 13.sp,
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(com.hemanager.mobile.ui.theme.HeColors.Yellow),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            AnimatedVisibility(visible = search.isNotBlank()) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "清除搜索",
+                    tint = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clickable { onSearchChange("") },
+                )
+            }
+        }
 
         QuickFilterRowV2(
             mediaValue = selectedValue,
@@ -433,56 +451,69 @@ internal fun SearchAndFilterPanelV2(
             onStatusSelected = onStatusSelected
         )
 
-        Surface(
+        // 筛选展开行：切角 + hairline + Slash 前缀
+        val expandShape = com.hemanager.mobile.ui.theme.CutCornerShape(8.dp)
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpenFilters() },
-            shape = RoundedCornerShape(20.dp),
-            color = Color.White.copy(alpha = 0.052f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.085f))
+                .clip(expandShape)
+                .background(com.hemanager.mobile.ui.theme.HeColors.Panel)
+                .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineMid, expandShape)
+                .clickable { onOpenFilters() }
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "筛选",
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Black
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "$selectedMediaLabel · $selectedStatusLabel",
-                    modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (activeCount > 0) {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.32f))
-                    ) {
-                        Text(
-                            activeCount.toString(),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Black
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
+            Text(
+                "//",
+                color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.sp,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "FILTER",
+                color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+                fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                letterSpacing = 1.8.sp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "$selectedMediaLabel · $selectedStatusLabel",
+                modifier = Modifier.weight(1f),
+                color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
+                fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                fontWeight = FontWeight.Medium,
+                fontSize = 11.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (activeCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .clip(com.hemanager.mobile.ui.theme.CutCornerShape(4.dp))
+                        .background(com.hemanager.mobile.ui.theme.HeColors.Yellow)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        activeCount.toString(),
+                        color = com.hemanager.mobile.ui.theme.HeColors.OnYellow,
+                        fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                    )
                 }
-                Text(
-                    "展开",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Black
-                )
+                Spacer(Modifier.width(8.dp))
             }
+            Text(
+                "→",
+                color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+            )
         }
     }
 }
@@ -531,42 +562,13 @@ internal fun QuickFilterRowV2(
 
 @Composable
 internal fun QuickFilterChipV2(label: String, selected: Boolean, accent: Color, onClick: () -> Unit) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val background by animateColorAsState(
-        targetValue = if (selected) accent.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.045f),
-        animationSpec = tween(160),
-        label = "quickChipBg"
+    // HE OP — accent 不再决定选中色（统一黄），保留参数兼容签名。
+    com.hemanager.mobile.ui.op.FilterTab(
+        label = label,
+        en = null,
+        active = selected,
+        onClick = onClick,
     )
-    val foreground by animateColorAsState(
-        targetValue = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(160),
-        label = "quickChipFg"
-    )
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
-        animationSpec = tween(120, easing = FastOutSlowInEasing),
-        label = "quickChipScale"
-    )
-    Surface(
-        modifier = Modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = background,
-        border = BorderStroke(1.dp, if (selected) accent.copy(alpha = 0.40f) else Color.White.copy(alpha = 0.075f))
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
-            color = foreground,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold
-        )
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

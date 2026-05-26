@@ -1120,6 +1120,17 @@ internal fun LibraryScreenV2(
                         }
                     }
                 } else {
+                // HE OP — hero + queue 只在「没有任何 filter + 有正在看的」时出现，
+                // 避免和筛选模式语义冲突
+                val viewingItems = allItems.filter { it.viewStatus == "viewing" }
+                val showHero = mediaType.isBlank() && statusFilter.isBlank() &&
+                    search.isBlank() && viewingItems.isNotEmpty()
+                val queueItems = if (showHero) {
+                    (viewingItems.drop(1) + allItems.filter { it.favorite && it.viewStatus != "viewing" })
+                        .distinctBy { it.id }
+                        .take(8)
+                } else emptyList()
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -1128,7 +1139,7 @@ internal fun LibraryScreenV2(
                             detectTapGestures(onTap = { swipeController.close() })
                         },
                     contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     item {
                         LibraryHeaderV2(
@@ -1139,6 +1150,31 @@ internal fun LibraryScreenV2(
                             onMenu = { scope.launch { drawerState.open() } },
                             onRefresh = { load(search) }
                         )
+                    }
+                    if (showHero) {
+                        item(key = "hero", contentType = "library-hero") {
+                            HeroFeature(
+                                serverUrl = serverUrl,
+                                token = token,
+                                item = viewingItems.first(),
+                                onContinue = { restart ->
+                                    openItem(context, viewingItems.first(), serverUrl, token, restart, visibleItems)
+                                },
+                                onToggleStar = { runQuickAction(viewingItems.first(), "favorite") },
+                            )
+                        }
+                        if (queueItems.isNotEmpty()) {
+                            item(key = "queue", contentType = "library-queue") {
+                                QueueRow(
+                                    serverUrl = serverUrl,
+                                    token = token,
+                                    items = queueItems,
+                                    onItemClick = { clicked ->
+                                        openItem(context, clicked, serverUrl, token, false, visibleItems)
+                                    },
+                                )
+                            }
+                        }
                     }
                     item {
                         SearchAndFilterPanelV2(
@@ -1229,6 +1265,12 @@ internal fun LibraryScreenV2(
                                 )
                             }
                         }
+                    }
+                    item(key = "status-stripe", contentType = "library-status") {
+                        Spacer(Modifier.height(12.dp))
+                        com.hemanager.mobile.ui.op.StatusStripe(
+                            server = serverHostV2(serverUrl),
+                        )
                     }
                 }
                 }
