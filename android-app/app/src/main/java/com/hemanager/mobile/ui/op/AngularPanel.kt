@@ -48,22 +48,35 @@ fun AngularPanel(
         br = Corner.BR in corners,
         bl = Corner.BL in corners,
     )
-    Box(modifier) {
+    // 关键修正：早期版本用 Box(modifier) + 内层 Box(matchParentSize)，外层没有非
+    // matchParentSize 的子节点撑大尺寸 → 整 panel 塌成 0×0。修法是让"内容 Box"自身就
+    // 当主容器（modifier 直接作用其上，content 撑大它），可选的封口三角用 Box overlay
+    // 包一层时再 align 到 TopEnd——但只在确实需要时才包，避免 yellowCorner=false 时
+    // 多余一层 Box 包装。
+    if (yellowCorner && Corner.TR in corners) {
+        Box(modifier = modifier) {
+            Box(
+                modifier = Modifier
+                    .clip(shape)
+                    .background(background)
+                    .then(if (hairline) Modifier.border(1.dp, HeColors.HairlineMid, shape) else Modifier)
+                    .padding(contentPadding),
+                content = content,
+            )
+            YellowCornerSeal(
+                size = cut,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
+        }
+    } else {
         Box(
-            modifier = Modifier
-                .matchParentSize()
+            modifier = modifier
                 .clip(shape)
                 .background(background)
                 .then(if (hairline) Modifier.border(1.dp, HeColors.HairlineMid, shape) else Modifier)
                 .padding(contentPadding),
             content = content,
         )
-        if (yellowCorner && Corner.TR in corners) {
-            YellowCornerSeal(
-                size = cut,
-                modifier = Modifier.align(Alignment.TopEnd),
-            )
-        }
     }
 }
 
