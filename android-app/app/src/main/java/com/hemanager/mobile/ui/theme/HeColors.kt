@@ -14,6 +14,49 @@ import androidx.compose.ui.graphics.Color
  * 添加新颜色时优先放这里；语义色（状态、强调）见 [HeColors.Status]。
  */
 object HeColors {
+    // ===================================================================
+    // HE OP 设计语言（黑底 + 单一高饱和黄 + hairline）—— 用于新版库/登录/创作者屏
+    // 旧的蓝紫 token 在下方保留给 player / audio 模块，不要删。
+    // ===================================================================
+
+    // ---- HE OP 表面层（偏冷的近黑） ----
+    val Void       = Color(0xFF08090C)  // 最深 — 顶级背景、状态条
+    val Ink        = Color(0xFF0F1014)  // 主背景
+    val Panel      = Color(0xFF16171D)  // 卡片背景
+    val OpSurface  = Color(0xFF1B1D25)  // 抬升卡片 / drawer item active
+    val SurfaceAlt = Color(0xFF23252F)
+
+    // ---- HE OP 描边（hairline 系统） ----
+    val Hairline    = Color(0x12FFFFFF) // alpha 0.07 — 标准 separator
+    val HairlineMid = Color(0x24FFFFFF) // alpha 0.14 — 卡片描边
+    val HairlineHi  = Color(0x38FFFFFF) // alpha 0.22 — 强调描边
+
+    // ---- HE OP 文字 ----
+    val OpWhite      = Color(0xFFF2F1ED)  // 主文字
+    val OpWhiteSoft  = Color(0xFFB8B9C2)  // 次要文字
+    val OpWhiteMuted = Color(0xFF6E6F78)  // muted / metadata
+    val OpWhiteFaint = Color(0xFF3C3D45)  // 极淡 / disabled
+
+    // ---- HE OP 签名色：高饱和黄（绝对克制使用） ----
+    val Yellow     = Color(0xFFF5D800)
+    val YellowDim  = Color(0xFFB8A100)
+    val YellowSoft = Color(0x1AF5D800)  // alpha 0.10
+
+    // ---- HE OP 次要 accent（极少用） ----
+    val Cyan       = Color(0xFF5CE5D7)
+    val CyanSoft   = Color(0x1A5CE5D7)
+
+    // ---- HE OP 状态色 ----
+    val Online   = Color(0xFF7BC494)
+    val OpDanger = Color(0xFFFF5C5C)
+
+    // ---- CTA 文字色（在 Yellow 上） ----
+    val OnYellow = Color(0xFF0E0F00)
+
+    // ===================================================================
+    // 旧蓝紫色板 —— player / audio / 当前 library V2 仍在用，保留
+    // ===================================================================
+
     // ---- 主色 ----
     val Primary = Color(0xFF8EA2FF)
     val Secondary = Color(0xFF58E6C2)

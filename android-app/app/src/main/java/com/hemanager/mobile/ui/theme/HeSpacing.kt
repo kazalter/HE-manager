@@ -32,6 +32,18 @@ object HeSpacing {
 
     /** 32.dp — 超大间距（屏幕级垂直留白） */
     val xxl = 32.dp
+
+    // ---- HE OP 档位（鹰角节奏，与上面 Material 档位并存）----
+    val Hairline = 1.dp
+    val XXS = 2.dp
+    val XS = 4.dp
+    val S = 8.dp
+    val M = 12.dp
+    val L = 16.dp
+    val XL = 20.dp
+    val XXL = 24.dp
+    val XXXL = 32.dp
+    val Mega = 48.dp
 }
 
 /**
@@ -48,4 +60,14 @@ object HeRadius {
 
     /** 16.dp — 大卡片、底部 sheet */
     val sheet = 16.dp
+
+    // ---- HE OP 切角档位（鹰角风，与上面 Round 档位并存）----
+    /** 7.dp — chip / 按钮 / 输入框切角 */
+    val CutSmall = 7.dp
+
+    /** 14.dp — 主卡片 / panel 切角 */
+    val CutStandard = 14.dp
+
+    /** 18.dp — bottom sheet 顶角切角 */
+    val CutSheet = 18.dp
 }
