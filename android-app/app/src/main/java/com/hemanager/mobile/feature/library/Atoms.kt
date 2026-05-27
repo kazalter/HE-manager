@@ -638,74 +638,6 @@ internal fun SkeletonBlockV2(modifier: Modifier, alpha: Float) {
 }
 
 @Composable
-internal fun GlassPanelV2(
-    modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(18.dp),
-    content: @Composable () -> Unit
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        color = Color.White.copy(alpha = 0.060f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f))
-    ) {
-        Box(
-            modifier = Modifier
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.White.copy(alpha = 0.070f),
-                            Color.Transparent
-                        )
-                    )
-                )
-                .padding(contentPadding)
-        ) {
-            content()
-        }
-    }
-}
-
-@Composable
-internal fun IconPillV2(
-    onClick: () -> Unit,
-    contentDescription: String,
-    enabled: Boolean = true,
-    icon: @Composable () -> Unit
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.94f else 1f,
-        animationSpec = tween(120, easing = FastOutSlowInEasing),
-        label = "iconPillV2Scale"
-    )
-    Surface(
-        modifier = Modifier
-            .size(46.dp)
-            .alpha(if (enabled) 1f else 0.58f)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clickable(
-                enabled = enabled,
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            ),
-        shape = CircleShape,
-        color = Color.White.copy(alpha = if (pressed) 0.12f else 0.065f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f))
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            icon()
-        }
-    }
-}
-
-@Composable
 internal fun StatusPillV2(label: String, color: Color, modifier: Modifier = Modifier) {
     // HE OP — 用 ● 圆点 + ALL-CAPS Oxanium，不再做药丸 surface
     Row(
@@ -732,19 +664,6 @@ internal fun StatusPillV2(label: String, color: Color, modifier: Modifier = Modi
 }
 
 @Composable
-internal fun SubtleChipV2(label: String) {
-    Text(
-        label,
-        color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
-        fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-        fontWeight = FontWeight.Medium,
-        fontSize = 10.sp,
-        letterSpacing = 0.4.sp,
-        maxLines = 1,
-    )
-}
-
-@Composable
 internal fun ActionPillV2(label: String, color: Color, onClick: () -> Unit) {
     Box(
         modifier = Modifier
@@ -764,97 +683,6 @@ internal fun ActionPillV2(label: String, color: Color, onClick: () -> Unit) {
             maxLines = 1,
         )
     }
-}
-
-@Composable
-internal fun DrawerActionV2(
-    label: String,
-    accent: Color,
-    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
-    enabled: Boolean = true,
-    loading: Boolean = false,
-    subtle: Boolean = false,
-    onClick: () -> Unit
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val containerColor = if (subtle) {
-        Color.White.copy(alpha = if (pressed) 0.07f else 0.025f)
-    } else {
-        accent.copy(alpha = if (pressed) 0.18f else 0.095f)
-    }
-    val borderColor = if (subtle) {
-        Color.White.copy(alpha = 0.08f)
-    } else {
-        accent.copy(alpha = 0.18f)
-    }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .alpha(if (enabled) 1f else 0.58f)
-            .clickable(
-                enabled = enabled,
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            ),
-        shape = RoundedCornerShape(22.dp),
-        color = containerColor,
-        border = BorderStroke(1.dp, borderColor)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            when {
-                loading -> CircularProgressIndicator(
-                    modifier = Modifier.size(15.dp),
-                    color = accent,
-                    strokeWidth = 2.dp
-                )
-                icon != null -> Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = accent,
-                    modifier = Modifier.size(18.dp)
-                )
-                else -> DrawerDotV2(accent)
-            }
-            Spacer(Modifier.width(11.dp))
-            Text(label, color = accent, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-internal fun DrawerSectionTitleV2(label: String) {
-    Text(
-        label,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Bold
-    )
-}
-
-@Composable
-internal fun DrawerDividerV2() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(Color.White.copy(alpha = 0.085f))
-    )
-}
-
-@Composable
-internal fun DrawerDotV2(color: Color) {
-    Box(
-        modifier = Modifier
-            .size(9.dp)
-            .clip(CircleShape)
-            .background(color)
-    )
 }
 
 @Composable
