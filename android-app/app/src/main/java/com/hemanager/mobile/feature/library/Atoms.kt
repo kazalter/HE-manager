@@ -306,21 +306,21 @@ internal fun MediaDetailRowV2(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier
-                    .width(58.dp)
-                    .height(78.dp)
+                    .width(84.dp)
+                    .height(116.dp)
                 ) {
                     RemoteCoverV2(
                         url = coverUrl(serverUrl, token, item),
                         label = mediaTypeLabelV2(item.mediaType),
                         accent = accent,
-                        decodeWidthPx = 156,
-                        decodeHeightPx = 216,
-                        cutDp = 5.dp,
+                        decodeWidthPx = 220,
+                        decodeHeightPx = 308,
+                        cutDp = 7.dp,
                         modifier = Modifier.fillMaxSize()
                     )
-                    // TR 5dp 黄角封口
+                    // TR 7dp 黄角封口
                     com.hemanager.mobile.ui.op.YellowCornerSeal(
-                        size = 5.dp,
+                        size = 7.dp,
                         modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
