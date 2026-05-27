@@ -303,7 +303,8 @@ internal fun LibraryScreenV2(
     var mediaType by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf("") }
     // sourceFilter / sortFilter 来自 HE OP filter sheet 新增的两个分区。
-    // sourceFilter 后端字段尚未接入，先做 UI 持久态 + 客户端 noop（默认 "all"）。
+    // sourceFilter 走客户端筛（MediaItem.sourceSite 字段，来自 backend Media.source_site）：
+    //   "all" → 不筛；"local" → sourceSite==null；其它 → sourceSite 精确匹配 ("x" / "wnacg" / "asmr")
     // sortFilter 映射后端 /mobile/media?sort=...：added→date / opened→opened /
     //   rating→rating / name→name；后端不识别会 fallback 到 date。
     var sourceFilter by remember { mutableStateOf("all") }
@@ -361,7 +362,8 @@ internal fun LibraryScreenV2(
             allItems.filter { item ->
                 item.id !in pendingDeletes &&
                     (mediaType.isBlank() || item.mediaType == mediaType) &&
-                    matchesStatusV2(item, statusFilter)
+                    matchesStatusV2(item, statusFilter) &&
+                    matchesSource(item, sourceFilter)
             }
         }
     }

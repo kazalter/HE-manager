@@ -494,6 +494,18 @@ internal fun typeLabel(type: String?): String {
     }
 }
 
+/**
+ * 来源筛选匹配。
+ * - "all"  → 全部通过
+ * - "local" → 仅本地（sourceSite 为 null 或空）
+ * - 其它   → 精确匹配（"x" / "wnacg" / "asmr"），大小写不敏感
+ */
+internal fun matchesSource(item: MediaItem, source: String): Boolean = when {
+    source.isBlank() || source == "all" -> true
+    source == "local" -> item.sourceSite.isNullOrBlank()
+    else -> item.sourceSite?.equals(source, ignoreCase = true) == true
+}
+
 /** HE OP 装饰代码：VID-A001 / MNG-X042 / ... 仅用于卡片角标装饰，不参与任何逻辑。 */
 internal fun fakeCode(item: MediaItem): String {
     val prefix = when (item.mediaType) {
