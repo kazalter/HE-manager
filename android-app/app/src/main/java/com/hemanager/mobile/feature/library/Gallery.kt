@@ -505,7 +505,8 @@ private class NativeImageGalleryAdapterV2(
         var disposable: Disposable? = null
 
         init {
-            root.setBackgroundColor(android.graphics.Color.rgb(18, 24, 34))
+            // HE OP — Panel 底色（#16171D）
+            root.setBackgroundColor(android.graphics.Color.rgb(22, 23, 29))
             imageView.scaleType = ImageView.ScaleType.CENTER_CROP
             root.addView(
                 imageView,
@@ -515,26 +516,29 @@ private class NativeImageGalleryAdapterV2(
                 )
             )
 
-            favoriteBadge.text = "*"
-            favoriteBadge.setTextColor(android.graphics.Color.rgb(246, 196, 107))
-            favoriteBadge.textSize = 13f
+            // HE OP 收藏角标：★ + 高饱和黄 (#F5D800)
+            favoriteBadge.text = "★"
+            favoriteBadge.setTextColor(android.graphics.Color.rgb(245, 216, 0))
+            favoriteBadge.textSize = 11f
             favoriteBadge.gravity = Gravity.CENTER
-            favoriteBadge.setBackgroundColor(android.graphics.Color.argb(132, 0, 0, 0))
-            val favoriteParams = FrameLayout.LayoutParams(dpView(root, 20), dpView(root, 20), Gravity.TOP or Gravity.END)
-            favoriteParams.setMargins(0, dpView(root, 3), dpView(root, 3), 0)
+            favoriteBadge.setBackgroundColor(android.graphics.Color.argb(160, 0, 0, 0))
+            val favoriteParams = FrameLayout.LayoutParams(dpView(root, 18), dpView(root, 18), Gravity.TOP or Gravity.END)
+            favoriteParams.setMargins(0, dpView(root, 4), dpView(root, 4), 0)
             root.addView(favoriteBadge, favoriteParams)
 
-            missingBadge.text = "MISS"
+            // HE OP 缺失角标：HE 系红 (#FF5C5C)，更克制的字号
+            missingBadge.text = "MISSING"
             missingBadge.setTextColor(android.graphics.Color.WHITE)
-            missingBadge.textSize = 10f
+            missingBadge.textSize = 9f
             missingBadge.gravity = Gravity.CENTER
             missingBadge.setTypeface(android.graphics.Typeface.DEFAULT_BOLD)
-            missingBadge.setBackgroundColor(android.graphics.Color.argb(204, 255, 78, 106))
+            missingBadge.setBackgroundColor(android.graphics.Color.argb(204, 255, 92, 92))
+            missingBadge.letterSpacing = 0.15f
             root.addView(
                 missingBadge,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    dpView(root, 16),
+                    dpView(root, 14),
                     Gravity.BOTTOM
                 )
             )

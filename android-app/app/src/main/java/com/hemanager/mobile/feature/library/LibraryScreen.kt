@@ -1095,6 +1095,20 @@ internal fun LibraryScreenV2(
                                     )
                                 }
 
+                                // HE OP 浮动列数 pill — 底部居中
+                                if (!imageGalleryPinching && !imageGallerySettling) {
+                                    ColsPill(
+                                        currentColumns = imageGalleryStableColumns,
+                                        onColumnsChange = { newCols ->
+                                            imageGalleryStableColumns = newCols
+                                            galleryPrefs.galleryColumns = newCols
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 22.dp),
+                                    )
+                                }
+
                                 if (
                                     !imageGalleryPinching &&
                                     !imageGallerySettling &&

@@ -221,6 +221,66 @@ internal fun QueueRow(
     }
 }
 
+/**
+ * 浮动列数选择 pill — 图片墙底部居中，黑底毛玻璃感 + // COLS 标签 + 5 个数字按钮。
+ *
+ * 选中数字显示为切角黄底 + OnYellow；未选中是 hairline 灰描边。
+ */
+@Composable
+internal fun ColsPill(
+    currentColumns: Int,
+    onColumnsChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val options = listOf(3, 4, 5, 6, 7)
+    val shape = com.hemanager.mobile.ui.theme.CutCornerShape(10.dp)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(Color.Black.copy(alpha = 0.78f))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            "//",
+            color = HeColors.Yellow,
+            fontFamily = GeistMono,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.sp,
+        )
+        Text(
+            "COLS",
+            color = HeColors.OpWhiteSoft,
+            fontFamily = Oxanium,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.5.sp,
+            letterSpacing = 1.4.sp,
+        )
+        Spacer(Modifier.width(4.dp))
+        options.forEach { col ->
+            val active = col == currentColumns
+            val cellShape = com.hemanager.mobile.ui.theme.CutCornerShape(5.dp)
+            Box(
+                modifier = Modifier
+                    .size(width = 22.dp, height = 22.dp)
+                    .clip(cellShape)
+                    .background(if (active) HeColors.Yellow else Color.Transparent)
+                    .clickable { onColumnsChange(col) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    col.toString(),
+                    color = if (active) HeColors.OnYellow else HeColors.OpWhiteSoft,
+                    fontFamily = GeistMono,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun QueueTile(
     serverUrl: String,
