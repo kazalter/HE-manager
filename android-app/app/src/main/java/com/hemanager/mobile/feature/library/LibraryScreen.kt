@@ -302,6 +302,12 @@ internal fun LibraryScreenV2(
     val scope = rememberCoroutineScope()
     var mediaType by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf("") }
+    // sourceFilter / sortFilter 来自 HE OP filter sheet 新增的两个分区。
+    // sourceFilter 后端字段尚未接入，先做 UI 持久态 + 客户端 noop（默认 "all"）。
+    // sortFilter 映射后端 /mobile/media?sort=...：added→date / opened→opened /
+    //   rating→rating / name→name；后端不识别会 fallback 到 date。
+    var sourceFilter by remember { mutableStateOf("all") }
+    var sortFilter by remember { mutableStateOf("added") }
     var search by remember { mutableStateOf("") }
     var allItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -722,9 +728,16 @@ internal fun LibraryScreenV2(
         loading = true
         error = null
         val querySnapshot = query.trim()
+        val sortParam = when (sortFilter) {
+            "added" -> "date"
+            "opened" -> "opened"
+            "rating" -> "rating"
+            "name" -> "name"
+            else -> "date"
+        }
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { ApiClient(serverUrl, token).getMedia("", querySnapshot, "date") }
+                runCatching { ApiClient(serverUrl, token).getMedia("", querySnapshot, sortParam) }
             }
             if (requestId != currentRequest) return@launch
             loading = false
@@ -804,7 +817,7 @@ internal fun LibraryScreenV2(
         }
     }
 
-    LaunchedEffect(serverUrl, token, search) {
+    LaunchedEffect(serverUrl, token, search, sortFilter) {
         delay(if (search.isBlank()) 0L else 280L)
         load(search)
     }
@@ -1306,13 +1319,21 @@ internal fun LibraryScreenV2(
 
                 if (filterSheetOpen) {
                     FilterBottomSheetV2(
-                        filters = mediaFilters,
-                        selectedValue = mediaType,
-                        onSelected = { mediaType = it },
-                        statusFilters = statusFilters,
-                        selectedStatusValue = statusFilter,
+                        mediaFilter = mediaType,
+                        onMediaSelected = { mediaType = it },
+                        statusFilter = statusFilter,
                         onStatusSelected = { statusFilter = it },
-                        onDismiss = { filterSheetOpen = false }
+                        sourceFilter = sourceFilter,
+                        onSourceSelected = { sourceFilter = it },
+                        sortFilter = sortFilter,
+                        onSortSelected = { sortFilter = it },
+                        onReset = {
+                            mediaType = ""
+                            statusFilter = ""
+                            sourceFilter = "all"
+                            sortFilter = "added"
+                        },
+                        onDismiss = { filterSheetOpen = false },
                     )
                 }
 

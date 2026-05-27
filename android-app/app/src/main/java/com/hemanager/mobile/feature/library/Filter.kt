@@ -193,6 +193,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.History
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.channels.Channel
@@ -571,74 +575,246 @@ internal fun QuickFilterChipV2(label: String, selected: Boolean, accent: Color, 
     )
 }
 
+// HE OP 筛选 sheet 选项常量（中文 only，按 spec 4 分区）
+private data class FilterChipOpt(
+    val value: String,
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+)
+
+private val FILTER_MEDIA_OPTS = listOf(
+    FilterChipOpt("", "全部"),
+    FilterChipOpt("video", "视频"),
+    FilterChipOpt("manga", "漫画"),
+    FilterChipOpt("image", "图片"),
+    FilterChipOpt("audio", "音频"),
+)
+private val FILTER_STATUS_OPTS = listOf(
+    FilterChipOpt("", "全部"),
+    FilterChipOpt("viewing", "继续看"),
+    FilterChipOpt("favorite", "收藏"),
+    FilterChipOpt("viewed", "已看完"),
+)
+private val FILTER_SOURCE_OPTS = listOf(
+    FilterChipOpt("all", "全部来源"),
+    FilterChipOpt("local", "本地"),
+    FilterChipOpt("x", "X"),
+    FilterChipOpt("wnacg", "wnacg"),
+)
+private val FILTER_SORT_OPTS = listOf(
+    FilterChipOpt("added", "最近添加", Icons.Default.Add),
+    FilterChipOpt("opened", "最近打开", Icons.Default.History),
+    FilterChipOpt("rating", "评分", Icons.Default.Star),
+    FilterChipOpt("name", "名称", Icons.AutoMirrored.Filled.List),
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun FilterBottomSheetV2(
-    filters: List<FilterOption>,
-    selectedValue: String,
-    onSelected: (String) -> Unit,
-    statusFilters: List<FilterOption>,
-    selectedStatusValue: String,
+    mediaFilter: String,
+    onMediaSelected: (String) -> Unit,
+    statusFilter: String,
     onStatusSelected: (String) -> Unit,
-    onDismiss: () -> Unit
+    sourceFilter: String,
+    onSourceSelected: (String) -> Unit,
+    sortFilter: String,
+    onSortSelected: (String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = Color(0xEF0B0E16),
-        tonalElevation = 0.dp
+        containerColor = com.hemanager.mobile.ui.theme.HeColors.Ink,
+        shape = com.hemanager.mobile.ui.theme.CutCornerShape(
+            cut = 18.dp,
+            tl = true,
+            tr = true,
+            bl = false,
+            br = false,
+        ),
+        scrimColor = Color.Black.copy(alpha = 0.7f),
+        dragHandle = null,  // 自绘 handle
+        tonalElevation = 0.dp,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp)
-                .padding(top = 6.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                "筛选",
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Black
+        Box {
+            // 顶部 3dp 黄色装饰条 (25%~70% 横向)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            0f    to Color.Transparent,
+                            0.25f to Color.Transparent,
+                            0.25f to com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                            0.70f to com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                            0.70f to Color.Transparent,
+                            1f    to Color.Transparent,
+                        )
+                    )
             )
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                DrawerSectionTitleV2("媒体类型")
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 22.dp, end = 22.dp, top = 14.dp, bottom = 28.dp),
+            ) {
+                // 居中 handle
+                Box(
+                    Modifier
+                        .padding(top = 8.dp, bottom = 18.dp)
+                        .align(Alignment.CenterHorizontally)
+                        .size(width = 38.dp, height = 3.dp)
+                        .background(com.hemanager.mobile.ui.theme.HeColors.HairlineHi)
+                )
+
+                // Header: // 筛选 + 重置
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    Modifier.fillMaxWidth().padding(bottom = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    filters.forEach { option ->
-                        PillTabV2(
-                            label = option.label,
-                            selected = selectedValue == option.value,
-                            accent = filterAccent(option.value),
-                            onClick = { onSelected(option.value) }
+                    com.hemanager.mobile.ui.op.Slash(cn = "筛选", en = null)
+                    Text(
+                        "重置",
+                        color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
+                        fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 0.5.sp,
+                        modifier = Modifier
+                            .clickable(onClick = onReset)
+                            .padding(8.dp),
+                    )
+                }
+
+                // 1. 媒体类型
+                FilterSection("媒体类型") {
+                    FILTER_MEDIA_OPTS.forEach { o ->
+                        com.hemanager.mobile.ui.op.FilterTab(
+                            label = o.label,
+                            en = null,
+                            active = mediaFilter == o.value,
+                            onClick = { onMediaSelected(o.value) },
                         )
                     }
                 }
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                DrawerSectionTitleV2("观看状态")
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(9.dp)
-                ) {
-                    statusFilters.forEach { option ->
-                        PillTabV2(
-                            label = option.label,
-                            selected = selectedStatusValue == option.value,
-                            accent = statusAccentV2(option.value),
-                            onClick = { onStatusSelected(option.value) }
+                Spacer(Modifier.height(18.dp))
+
+                // 2. 观看状态
+                FilterSection("观看状态") {
+                    FILTER_STATUS_OPTS.forEach { o ->
+                        com.hemanager.mobile.ui.op.FilterTab(
+                            label = o.label,
+                            en = null,
+                            active = statusFilter == o.value,
+                            onClick = { onStatusSelected(o.value) },
                         )
                     }
                 }
+                Spacer(Modifier.height(18.dp))
+
+                // 3. 来源
+                FilterSection("来源") {
+                    FILTER_SOURCE_OPTS.forEach { o ->
+                        com.hemanager.mobile.ui.op.FilterTab(
+                            label = o.label,
+                            en = null,
+                            active = sourceFilter == o.value,
+                            onClick = { onSourceSelected(o.value) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
+
+                // 4. 排序（带 icon）
+                FilterSection("排序") {
+                    FILTER_SORT_OPTS.forEach { o ->
+                        SortChipV2(
+                            label = o.label,
+                            icon = o.icon!!,
+                            active = sortFilter == o.value,
+                            onClick = { onSortSelected(o.value) },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                // 应用 CTA
+                com.hemanager.mobile.ui.op.YellowCTA(
+                    text = "应用 · APPLY",
+                    onClick = onDismiss,
+                    icon = Icons.AutoMirrored.Filled.ArrowForward,
+                    size = com.hemanager.mobile.ui.op.CtaSize.Large,
+                    fullWidth = true,
+                )
             }
         }
+    }
+}
+
+/** 分区容器 — // 小标题 + 横滑 chip Row */
+@Composable
+private fun FilterSection(title: String, content: @Composable RowScope.() -> Unit) {
+    Column {
+        com.hemanager.mobile.ui.op.Slash(cn = title, en = null, fontSize = 9.5.sp)
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(bottom = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
+    }
+}
+
+/** SortChip — FilterTab 的带 icon 变体，仅用于排序分区 */
+@Composable
+private fun SortChipV2(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = com.hemanager.mobile.ui.theme.CutCornerShape(7.dp)
+    val tint = if (active) com.hemanager.mobile.ui.theme.HeColors.OnYellow
+               else com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .then(
+                if (active) Modifier.background(com.hemanager.mobile.ui.theme.HeColors.Yellow)
+                else Modifier
+                    .background(Color.Transparent)
+                    .border(1.dp, com.hemanager.mobile.ui.theme.HeColors.HairlineMid, shape)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(13.dp),
+        )
+        Text(
+            text = label,
+            color = if (active) com.hemanager.mobile.ui.theme.HeColors.OnYellow
+                    else com.hemanager.mobile.ui.theme.HeColors.OpWhite,
+            fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            maxLines = 1,
+        )
     }
 }
 
