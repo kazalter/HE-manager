@@ -372,8 +372,8 @@ internal fun MediaCardV2(
                         color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                         fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 17.sp,
-                        lineHeight = 22.sp,
+                        fontSize = 18.sp,
+                        lineHeight = 23.sp,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -381,7 +381,8 @@ internal fun MediaCardV2(
                         metaInlineV2(item),
                         color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                         fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 11.5.sp,
                         letterSpacing = 0.4.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -905,8 +906,8 @@ internal fun MediaGridTileV2(
                     color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                     fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.5.sp,
-                    lineHeight = 14.sp,
+                    fontSize = 13.sp,
+                    lineHeight = 16.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(horizontal = 2.dp),
@@ -914,7 +915,7 @@ internal fun MediaGridTileV2(
                 Spacer(Modifier.height(3.dp))
                 com.hemanager.mobile.ui.op.CodeChip(
                     text = fakeCode(item),
-                    fontSize = 8.5.sp,
+                    fontSize = 10.sp,
                     modifier = Modifier.padding(horizontal = 2.dp),
                 )
             }

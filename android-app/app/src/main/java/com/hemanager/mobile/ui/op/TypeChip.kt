@@ -45,8 +45,8 @@ fun TypeChip(
             text = code,
             color = fg,
             fontFamily = GeistMono,
-            fontSize = 9.5.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
             letterSpacing = 0.8.sp,
         )
     }

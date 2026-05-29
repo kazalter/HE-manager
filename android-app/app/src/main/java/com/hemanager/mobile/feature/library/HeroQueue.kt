@@ -154,7 +154,7 @@ internal fun HeroFeature(
                         color = HeColors.OpWhiteSoft,
                         fontFamily = Oxanium,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         letterSpacing = 1.6.sp,
                     )
                     Spacer(Modifier.width(8.dp))
@@ -163,7 +163,8 @@ internal fun HeroFeature(
                     progressTextV2(item),
                     color = HeColors.OpWhiteSoft,
                     fontFamily = GeistMono,
-                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
                     letterSpacing = 0.3.sp,
                 )
             }
@@ -246,15 +247,15 @@ internal fun ColsPill(
             "//",
             color = HeColors.Yellow,
             fontFamily = GeistMono,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontSize = 11.sp,
         )
         Text(
             "COLS",
             color = HeColors.OpWhiteSoft,
             fontFamily = Oxanium,
             fontWeight = FontWeight.Bold,
-            fontSize = 9.5.sp,
+            fontSize = 10.5.sp,
             letterSpacing = 1.4.sp,
         )
         Spacer(Modifier.width(4.dp))
@@ -274,7 +275,7 @@ internal fun ColsPill(
                     color = if (active) HeColors.OnYellow else HeColors.OpWhiteSoft,
                     fontFamily = GeistMono,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                 )
             }
         }
@@ -344,8 +345,8 @@ private fun QueueTile(
                 color = HeColors.OpWhite,
                 fontFamily = NotoSansSC,
                 fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                lineHeight = 14.sp,
+                fontSize = 12.5.sp,
+                lineHeight = 15.5.sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 8.dp),

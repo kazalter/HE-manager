@@ -78,14 +78,15 @@ fun StatNumber(
                     text = "/",
                     color = HeColors.OpWhiteMuted,
                     fontFamily = GeistMono,
-                    fontSize = 10.sp,
+                    fontSize = 11.sp,
                     modifier = Modifier.padding(start = 2.dp, end = 2.dp),
                 )
                 Text(
                     text = "$total",
                     color = HeColors.OpWhiteMuted,
                     fontFamily = GeistMono,
-                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
                 )
             }
         }
@@ -94,8 +95,8 @@ fun StatNumber(
             text = label,
             color = HeColors.OpWhiteMuted,
             fontFamily = Oxanium,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.5.sp,
             letterSpacing = 1.6.sp,
         )
     }

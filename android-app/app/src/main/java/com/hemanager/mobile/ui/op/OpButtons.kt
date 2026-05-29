@@ -36,9 +36,9 @@ private data class CtaMetrics(
 )
 
 private fun metricsFor(size: CtaSize): CtaMetrics = when (size) {
-    CtaSize.Small  -> CtaMetrics(8.dp,  16.dp, 11.sp,   8.dp, 13.dp)
-    CtaSize.Medium -> CtaMetrics(11.dp, 20.dp, 12.5.sp, 10.dp, 14.5.dp)
-    CtaSize.Large  -> CtaMetrics(14.dp, 26.dp, 14.sp,   10.dp, 16.dp)
+    CtaSize.Small  -> CtaMetrics(8.dp,  16.dp, 12.sp,   8.dp, 13.dp)
+    CtaSize.Medium -> CtaMetrics(11.dp, 20.dp, 13.5.sp, 10.dp, 14.5.dp)
+    CtaSize.Large  -> CtaMetrics(14.dp, 26.dp, 15.sp,   10.dp, 16.dp)
 }
 
 /**
@@ -175,8 +175,8 @@ fun FilterTab(
                 text = label,
                 color = labelColor,
                 fontFamily = Geist,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
                 letterSpacing = 0.4.sp,
             )
             if (en != null) {
@@ -184,7 +184,8 @@ fun FilterTab(
                     text = en,
                     color = labelColor,
                     fontFamily = Oxanium,
-                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 10.5.sp,
                     letterSpacing = 1.2.sp,
                     modifier = Modifier.alpha(0.6f),
                 )

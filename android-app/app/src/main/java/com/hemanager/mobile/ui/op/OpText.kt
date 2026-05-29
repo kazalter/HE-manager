@@ -36,7 +36,7 @@ import com.hemanager.mobile.ui.theme.Oxanium
 fun Slash(
     cn: String,
     en: String? = null,
-    fontSize: TextUnit = 11.sp,
+    fontSize: TextUnit = 12.sp,
     color: Color = HeColors.OpWhiteSoft,
     modifier: Modifier = Modifier,
 ) {
@@ -115,14 +115,14 @@ fun OpTitle(
 fun CodeChip(
     text: String,
     color: Color = HeColors.OpWhiteMuted,
-    fontSize: TextUnit = 9.5.sp,
+    fontSize: TextUnit = 10.5.sp,
     modifier: Modifier = Modifier,
 ) {
     Text(
         text = text,
         color = color,
         fontFamily = GeistMono,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontSize = fontSize,
         letterSpacing = 0.8.sp,
         modifier = modifier,

@@ -153,7 +153,7 @@ fun LoginScreen(
                     color = HeColors.OpWhite,
                     fontFamily = Oxanium,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     letterSpacing = 3.sp,
                 )
                 Spacer(Modifier.weight(1f))
@@ -171,8 +171,8 @@ fun LoginScreen(
                 color = HeColors.OpWhiteSoft,
                 fontFamily = NotoSansSC,
                 fontWeight = FontWeight.Medium,
-                fontSize = 13.5.sp,
-                lineHeight = 21.sp,
+                fontSize = 14.5.sp,
+                lineHeight = 22.sp,
             )
 
             Spacer(Modifier.height(40.dp))
@@ -239,7 +239,7 @@ fun LoginScreen(
                                 color = HeColors.OnYellow,
                                 fontFamily = Oxanium,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
+                                fontSize = 14.sp,
                                 letterSpacing = 1.5.sp,
                             )
                         }
@@ -269,7 +269,8 @@ fun LoginScreen(
                     text = "// INIT FIRST ADMIN  →",
                     color = HeColors.OpWhiteSoft,
                     fontFamily = Oxanium,
-                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.5.sp,
                     letterSpacing = 1.6.sp,
                 )
             }
@@ -287,7 +288,8 @@ fun LoginScreen(
                         .padding(top = 16.dp),
                     color = if (message.startsWith("// ERR")) HeColors.OpDanger else HeColors.OpWhiteMuted,
                     fontFamily = GeistMono,
-                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
                     letterSpacing = 0.4.sp,
                 )
             }
@@ -316,7 +318,8 @@ private fun TerminalField(
                 text = "//",
                 color = HeColors.OpWhiteMuted,
                 fontFamily = GeistMono,
-                fontSize = 9.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.5.sp,
                 modifier = Modifier.padding(end = 4.dp),
             )
             Text(
@@ -324,15 +327,15 @@ private fun TerminalField(
                 color = HeColors.Yellow,
                 fontFamily = Oxanium,
                 fontWeight = FontWeight.Bold,
-                fontSize = 9.5.sp,
+                fontSize = 10.5.sp,
                 letterSpacing = 2.sp,
             )
             Text(
                 text = labelCN,
                 color = HeColors.OpWhiteMuted,
                 fontFamily = NotoSansSC,
-                fontWeight = FontWeight.Medium,
-                fontSize = 9.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.5.sp,
                 letterSpacing = 0.5.sp,
                 modifier = Modifier.padding(start = 6.dp),
             )
@@ -357,8 +360,8 @@ private fun TerminalField(
             textStyle = LocalTextStyle.current.copy(
                 color = HeColors.OpWhite,
                 fontFamily = GeistMono,
-                fontWeight = FontWeight.Medium,
-                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.5.sp,
                 letterSpacing = if (password) 4.sp else 0.2.sp,
             ),
             cursorBrush = SolidColor(HeColors.Yellow),

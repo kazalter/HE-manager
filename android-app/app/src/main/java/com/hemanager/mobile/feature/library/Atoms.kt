@@ -354,7 +354,7 @@ internal fun MediaDetailRowV2(
                         color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                         fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 15.sp,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -373,7 +373,8 @@ internal fun MediaDetailRowV2(
                             modifier = Modifier.weight(1f),
                             color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                             fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 11.5.sp,
                             letterSpacing = 0.3.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -403,8 +404,8 @@ internal fun TinyBadgeV2(label: String, color: Color, modifier: Modifier = Modif
             label,
             color = color,
             fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-            fontSize = 9.5.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
             letterSpacing = 0.6.sp,
             maxLines = 1,
         )
@@ -437,7 +438,7 @@ internal fun RemoteCoverV2(
             color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteFaint,
             fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
             fontWeight = FontWeight.Bold,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             letterSpacing = 2.sp,
         )
         CoilCoverImage(
@@ -486,7 +487,7 @@ internal fun FloatingPlayButtonV2(label: String, onClick: () -> Unit, modifier: 
             color = com.hemanager.mobile.ui.theme.HeColors.OnYellow,
             fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
             fontWeight = FontWeight.Bold,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             letterSpacing = 1.4.sp,
         )
     }
@@ -511,7 +512,7 @@ internal fun EmptyStateV2() {
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                 fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                 fontWeight = FontWeight.Black,
-                fontSize = 18.sp
+                fontSize = 19.sp
             )
             Spacer(Modifier.height(8.dp))
             Text(
@@ -519,7 +520,7 @@ internal fun EmptyStateV2() {
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                 fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                 fontWeight = FontWeight.Medium,
-                fontSize = 12.5.sp,
+                fontSize = 13.5.sp,
                 textAlign = TextAlign.Center
             )
         }
@@ -540,8 +541,8 @@ internal fun ErrorPanelV2(error: String, loading: Boolean, onRetry: () -> Unit) 
                     "// ERR",
                     color = com.hemanager.mobile.ui.theme.HeColors.OpDanger,
                     fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
                     letterSpacing = 1.5.sp,
                 )
                 Spacer(Modifier.height(4.dp))
@@ -549,7 +550,8 @@ internal fun ErrorPanelV2(error: String, loading: Boolean, onRetry: () -> Unit) 
                     error,
                     color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
                     fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -583,7 +585,8 @@ internal fun LoadingLineV2() {
                 "// STREAM · 同步媒体库",
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
                 fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
                 letterSpacing = 0.5.sp,
             )
         }
@@ -656,7 +659,7 @@ internal fun StatusPillV2(label: String, color: Color, modifier: Modifier = Modi
             color = color,
             fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
             fontWeight = FontWeight.Bold,
-            fontSize = 9.5.sp,
+            fontSize = 10.5.sp,
             letterSpacing = 1.4.sp,
             maxLines = 1,
         )
@@ -677,8 +680,8 @@ internal fun ActionPillV2(label: String, color: Color, onClick: () -> Unit) {
             label,
             color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
             fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontSize = 11.sp,
             letterSpacing = 1.2.sp,
             maxLines = 1,
         )

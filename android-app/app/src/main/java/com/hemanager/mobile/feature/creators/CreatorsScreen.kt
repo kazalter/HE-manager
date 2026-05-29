@@ -278,8 +278,8 @@ private fun CreatorsListView(
                 color = HeColors.OpWhiteSoft,
                 fontFamily = NotoSansSC,
                 fontWeight = FontWeight.Medium,
-                fontSize = 12.5.sp,
-                lineHeight = 19.sp,
+                fontSize = 13.5.sp,
+                lineHeight = 20.sp,
             )
             Spacer(Modifier.height(14.dp))
             // 32×3dp 黄短线
@@ -324,14 +324,15 @@ private fun CreatorsListView(
                 )
             }
             error != null -> Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) {
-                Text(error, color = HeColors.OpDanger, fontFamily = GeistMono, fontSize = 11.sp)
+                Text(error, color = HeColors.OpDanger, fontFamily = GeistMono, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
             }
             creators.isEmpty() -> Box(Modifier.fillMaxWidth().weight(1f), Alignment.Center) {
                 Text(
                     "// 暂无可聚合的创作者",
                     color = HeColors.OpWhiteMuted,
                     fontFamily = GeistMono,
-                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
                 )
             }
             else -> LazyVerticalGrid(
@@ -441,8 +442,8 @@ private fun CreatorDossier(
                         opCode,
                         color = HeColors.Yellow,
                         fontFamily = GeistMono,
-                        fontSize = 8.5.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
                         letterSpacing = 0.5.sp,
                     )
                 }
@@ -479,7 +480,7 @@ private fun CreatorDossier(
                         color = HeColors.Yellow,
                         fontFamily = Oxanium,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 9.sp,
+                        fontSize = 10.5.sp,
                         letterSpacing = 1.2.sp,
                     )
                     Spacer(Modifier.weight(1f))
@@ -487,8 +488,8 @@ private fun CreatorDossier(
                         "×${creator.mediaCount}",
                         color = HeColors.OpWhite,
                         fontFamily = GeistMono,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.5.sp,
                     )
                 }
             }
@@ -501,7 +502,7 @@ private fun CreatorDossier(
                     color = HeColors.OpWhite,
                     fontFamily = NotoSansSC,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -511,7 +512,7 @@ private fun CreatorDossier(
                         "@${creator.screenName}"
                     else "— · ARTIST",
                     color = HeColors.OpWhiteMuted,
-                    fontSize = 9.sp,
+                    fontSize = 10.5.sp,
                 )
             }
         }
@@ -606,7 +607,7 @@ private fun CreatorDetailView(
                             color = HeColors.OpWhiteMuted,
                             fontFamily = Oxanium,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 9.sp,
+                            fontSize = 10.5.sp,
                             letterSpacing = 1.8.sp,
                         )
                     }
@@ -639,7 +640,7 @@ private fun CreatorDetailView(
                             color = HeColors.OpWhiteSoft,
                             fontFamily = if (creator.kind == "x") GeistMono else Oxanium,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             letterSpacing = if (creator.kind == "x") 0.5.sp else 1.6.sp,
                         )
                     }
@@ -707,7 +708,7 @@ private fun CreatorDetailView(
                 .weight(1f)
                 .padding(horizontal = 18.dp, vertical = 14.dp),
         ) {
-            Slash(cn = "作品集", en = "Works", fontSize = 9.5.sp)
+            Slash(cn = "作品集", en = "Works", fontSize = 10.5.sp)
             Spacer(Modifier.height(10.dp))
             when {
                 detailLoading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
@@ -722,7 +723,8 @@ private fun CreatorDetailView(
                         "// 加载创作者作品失败",
                         color = HeColors.OpDanger,
                         fontFamily = GeistMono,
-                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
                     )
                 }
                 mediaList.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
@@ -730,7 +732,8 @@ private fun CreatorDetailView(
                         "// 没有作品",
                         color = HeColors.OpWhiteMuted,
                         fontFamily = GeistMono,
-                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
                     )
                 }
                 else -> LazyVerticalGrid(
@@ -842,9 +845,9 @@ private fun WorkTile(
             item.title,
             color = HeColors.OpWhite,
             fontFamily = NotoSansSC,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 10.5.sp,
-            lineHeight = 13.sp,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -853,7 +856,7 @@ private fun WorkTile(
             CodeChip(
                 text = com.hemanager.mobile.feature.library.formatDuration(item.duration),
                 color = HeColors.OpWhiteMuted,
-                fontSize = 8.5.sp,
+                fontSize = 10.sp,
             )
         }
     }

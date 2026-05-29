@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hemanager.mobile.ui.theme.GeistMono
@@ -42,13 +43,15 @@ fun StatusStripe(
             text = "//",
             color = HeColors.Yellow,
             fontFamily = GeistMono,
-            fontSize = 9.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.5.sp,
         )
         Text(
             text = "HE://$server",
             color = HeColors.OpWhiteMuted,
             fontFamily = GeistMono,
-            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Medium,
+            fontSize = 10.5.sp,
             letterSpacing = 0.6.sp,
         )
         Box(
@@ -60,14 +63,16 @@ fun StatusStripe(
             text = "● $ping",
             color = HeColors.Online,
             fontFamily = GeistMono,
-            fontSize = 9.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 10.5.sp,
         )
         Spacer(Modifier.weight(1f))
         Text(
             text = "UID:$uid",
             color = HeColors.OpWhiteMuted,
             fontFamily = GeistMono,
-            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Medium,
+            fontSize = 10.5.sp,
         )
     }
 }

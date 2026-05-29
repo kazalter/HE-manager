@@ -420,7 +420,7 @@ internal fun SearchAndFilterPanelV2(
                         color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                         fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                         fontWeight = FontWeight.Medium,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                     )
                 }
                 androidx.compose.foundation.text.BasicTextField(
@@ -430,7 +430,8 @@ internal fun SearchAndFilterPanelV2(
                     textStyle = androidx.compose.material3.LocalTextStyle.current.copy(
                         color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                         fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
-                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
                     ),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(com.hemanager.mobile.ui.theme.HeColors.Yellow),
                     modifier = Modifier.fillMaxWidth(),
@@ -471,8 +472,8 @@ internal fun SearchAndFilterPanelV2(
                 "//",
                 color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
                 fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
             )
             Spacer(Modifier.width(6.dp))
             Text(
@@ -480,7 +481,7 @@ internal fun SearchAndFilterPanelV2(
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhite,
                 fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
                 fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 letterSpacing = 1.8.sp,
             )
             Spacer(Modifier.width(10.dp))
@@ -489,8 +490,8 @@ internal fun SearchAndFilterPanelV2(
                 modifier = Modifier.weight(1f),
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
                 fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
-                fontWeight = FontWeight.Medium,
-                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -506,7 +507,7 @@ internal fun SearchAndFilterPanelV2(
                         color = com.hemanager.mobile.ui.theme.HeColors.OnYellow,
                         fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                     )
                 }
                 Spacer(Modifier.width(8.dp))
@@ -516,7 +517,7 @@ internal fun SearchAndFilterPanelV2(
                 color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
                 fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
                 fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
+                fontSize = 13.sp,
             )
         }
     }
@@ -682,7 +683,7 @@ internal fun FilterBottomSheetV2(
                         color = com.hemanager.mobile.ui.theme.HeColors.Yellow,
                         fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         letterSpacing = 0.5.sp,
                         modifier = Modifier
                             .clickable(onClick = onReset)
@@ -812,7 +813,7 @@ private fun SortChipV2(
                     else com.hemanager.mobile.ui.theme.HeColors.OpWhite,
             fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
             fontWeight = FontWeight.Bold,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             maxLines = 1,
         )
     }

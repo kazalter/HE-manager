@@ -289,7 +289,7 @@ internal fun AppDrawerV2(
 
                     // 3. 服务连接
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        com.hemanager.mobile.ui.op.Slash(cn = "服务连接", en = "Server Link", fontSize = 9.5.sp)
+                        com.hemanager.mobile.ui.op.Slash(cn = "服务连接", en = "Server Link", fontSize = 10.5.sp)
                         DrawerServerCardV2(
                             serverUrl = serverUrl,
                             online = true,
@@ -298,7 +298,7 @@ internal fun AppDrawerV2(
 
                     // 4. 导航
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        com.hemanager.mobile.ui.op.Slash(cn = "导航", en = "Navigate", fontSize = 9.5.sp)
+                        com.hemanager.mobile.ui.op.Slash(cn = "导航", en = "Navigate", fontSize = 10.5.sp)
                         Spacer(Modifier.height(6.dp))
                         DNavRow(
                             cn = "媒体库", en = "Library",
@@ -345,7 +345,7 @@ internal fun AppDrawerV2(
 
                     // 5. 媒体分类
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        com.hemanager.mobile.ui.op.Slash(cn = "媒体分类", en = "Library", fontSize = 9.5.sp)
+                        com.hemanager.mobile.ui.op.Slash(cn = "媒体分类", en = "Library", fontSize = 10.5.sp)
                         Spacer(Modifier.height(6.dp))
                         filters.forEach { option ->
                             DNavRow(
@@ -411,7 +411,7 @@ internal fun AppDrawerV2(
                                 color = com.hemanager.mobile.ui.theme.HeColors.OpDanger,
                                 fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                                 letterSpacing = 1.8.sp,
                             )
                             Spacer(Modifier.width(6.dp))
@@ -419,8 +419,8 @@ internal fun AppDrawerV2(
                                 "退出登录",
                                 color = com.hemanager.mobile.ui.theme.HeColors.OpDanger.copy(alpha = 0.85f),
                                 fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
                             )
                         }
                     }
@@ -488,8 +488,8 @@ internal fun DrawerProfileHeaderV2() {
                 "ARCHIVIST · LVL 14",
                 color = com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
                 fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.5.sp,
                 letterSpacing = 1.4.sp,
             )
             Spacer(Modifier.height(4.dp))
@@ -527,7 +527,7 @@ internal fun DrawerServerCardV2(serverUrl: String, online: Boolean = true) {
                         else com.hemanager.mobile.ui.theme.HeColors.OpDanger,
                 fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
                 fontWeight = FontWeight.Bold,
-                fontSize = 10.sp,
+                fontSize = 11.sp,
                 letterSpacing = 1.4.sp,
             )
             Spacer(Modifier.weight(1f))
@@ -589,7 +589,7 @@ private fun DNavRow(
                             else com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                     fontFamily = com.hemanager.mobile.ui.theme.Oxanium,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 10.5.sp,
+                    fontSize = 11.5.sp,
                     letterSpacing = 1.6.sp,
                 )
                 Spacer(Modifier.height(1.dp))
@@ -599,8 +599,8 @@ private fun DNavRow(
                 color = if (active) com.hemanager.mobile.ui.theme.HeColors.OpWhite
                         else com.hemanager.mobile.ui.theme.HeColors.OpWhiteSoft,
                 fontFamily = com.hemanager.mobile.ui.theme.NotoSansSC,
-                fontWeight = FontWeight.Medium,
-                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.5.sp,
             )
         }
         if (count != null) {
@@ -609,8 +609,8 @@ private fun DNavRow(
                 color = if (active) com.hemanager.mobile.ui.theme.HeColors.Yellow
                         else com.hemanager.mobile.ui.theme.HeColors.OpWhiteMuted,
                 fontFamily = com.hemanager.mobile.ui.theme.GeistMono,
-                fontWeight = FontWeight.Medium,
-                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp,
                 letterSpacing = 0.5.sp,
             )
         }
