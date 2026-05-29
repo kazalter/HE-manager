@@ -50,6 +50,7 @@ backend/.thumbnails/
 backend/.dedup/
 backend/data/
 backend/uploads/
+backend/x_archive_uploads/
 backend/.lostfound/
 backend/_scratch/
 backend/app/library.dump.sql
@@ -68,6 +69,7 @@ covers/
 # --- Logs --------------------------------------------------------------------
 logs/
 *.log
+*.hprof
 
 # --- Android build artifacts ------------------------------------------------
 # Every gradle build mutates these. Before this .gitignore they were tracked
