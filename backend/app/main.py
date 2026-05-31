@@ -660,11 +660,34 @@ def upsert_external_downloaded_audio_media(
     return media
 
 
+def wnacg_download_is_complete(item_dir: str) -> bool:
+    # source.txt is written by download_wnacg_item only AFTER the page loop
+    # finishes (see below), so its presence is a reliable "this download
+    # actually completed" sentinel. A failed/partial download (exception mid
+    # loop) never reaches that write, so its folder lacks source.txt — which is
+    # exactly how we tell a half-downloaded book apart from a finished one
+    # without needing to know the expected page count out-of-band.
+    return os.path.isfile(os.path.join(item_dir, "source.txt"))
+
+
 def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Session) -> Optional[models.Media]:
     # WNACG works are manga; ASMR works are audio. The expected media_type is
     # the only branch difference — everything else (source_url/source_site
     # match, then absolute_path fallback) is identical.
     expected_media_type = "audio" if (item.source_type or "") == "asmr" else "manga"
+    is_manga = expected_media_type == "manga"
+
+    source = item.source
+    item_dir = (
+        external_item_download_dir(item, source)
+        if source and source.download_root_path
+        else None
+    )
+    # For manga, "downloaded" means the folder exists AND finished (has the
+    # source.txt sentinel). A partial folder — or one whose folder the user
+    # deleted by hand — must NOT count as downloaded, otherwise the favourite
+    # gets a permanent "已下载" badge that greys it out and blocks re-download.
+    manga_complete = bool(is_manga and item_dir and wnacg_download_is_complete(item_dir))
 
     media = (
         db.query(models.Media)
@@ -677,13 +700,21 @@ def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Se
         .first()
     )
     if media:
+        if is_manga and not manga_complete:
+            # Stale row: a previous failed download (or the find-local fallback
+            # below) registered a half-finished/now-deleted folder as a Media
+            # row. Self-heal by flagging it missing so it drops out of both the
+            # library and this favourite's "已下载" badge, then report
+            # not-downloaded so the user can re-download (which resumes via the
+            # per-page skip in download_wnacg_item).
+            media.is_missing = True
+            db.commit()
+            return None
         return media
 
-    source = item.source
-    if not source or not source.download_root_path:
+    if not source or not source.download_root_path or not item_dir:
         return None
 
-    item_dir = external_item_download_dir(item, source)
     if not os.path.isdir(item_dir):
         return None
 
@@ -709,6 +740,11 @@ def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Se
     # total that only the download path knows, so we just bail — the row gets
     # created when the user actually downloads via run_asmr_download_job.
     if expected_media_type == "audio":
+        return None
+
+    # Only auto-promote a folder that actually finished downloading; a partial
+    # folder left behind by a failed job must stay re-downloadable.
+    if not manga_complete:
         return None
 
     return upsert_external_downloaded_media(item, source, item_dir, source.download_root_path, db)
@@ -818,6 +854,26 @@ def cleanup_incomplete_download(item_dir: str, expected_pages: int):
         return
 
     shutil.rmtree(item_dir, ignore_errors=True)
+
+
+def log_wnacg_download_failure(download_root_path: str, title: str, url: str, error: str):
+    """Append one line to a durable failure log next to the downloaded books.
+
+    DOWNLOAD_JOBS is in-memory only, so the per-job failure list evaporates on
+    a page reload or a backend restart — which is exactly why the user "couldn't
+    see which books failed". This file survives both, giving a permanent record
+    of what failed and why."""
+    try:
+        root = normalize_download_root(download_root_path, "wnacg")
+        manga_dir = os.path.join(root, "manga")
+        os.makedirs(manga_dir, exist_ok=True)
+        log_path = os.path.join(manga_dir, "_download_errors.log")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] {title} | {url} | {error}\n")
+    except Exception:
+        # Logging must never take down a download job.
+        pass
 
 
 def prepare_wnacg_download_plan(item: models.ExternalFavoriteItem, source: models.ExternalFavoriteSource, download_root_path: str):
@@ -945,6 +1001,7 @@ def run_wnacg_download_job(job_id: str, item_ids: List[int], download_root_path:
                     task["status"] = "failed"
                     task["error"] = str(exc)
                 job["results"].append({"item_id": item.id, "title": item.title, "status": "failed", "error": str(exc)})
+                log_wnacg_download_failure(download_root_path, item.title, item.url, str(exc))
 
         job["bytes_total_known"] = False
         job["status"] = "running"
@@ -980,6 +1037,7 @@ def run_wnacg_download_job(job_id: str, item_ids: List[int], download_root_path:
                     task["status"] = "failed"
                     task["error"] = str(exc)
                 job["results"].append({"item_id": item.id, "title": item.title, "status": "failed", "error": str(exc)})
+                log_wnacg_download_failure(download_root_path, item.title, item.url, str(exc))
 
         job["current_book_title"] = ""
         job["current_book_total_pages"] = 0

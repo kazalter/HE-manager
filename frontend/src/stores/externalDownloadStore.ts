@@ -59,7 +59,10 @@ const pollOnce = async (jobId: string) => {
     if (isFinalStatus(res.data.status)) {
       stopPolling()
       state.inProgress = false
-      persistJobId(null)
+      // Keep the job_id persisted so a page reload restores the finished
+      // panel (incl. the failure list) instead of silently losing it — it's
+      // only cleared when the user explicitly dismisses, or when the backend
+      // no longer has the job (handled in tryResume / the 404 branch below).
       fireCompleted(res.data)
     }
   } catch (err: any) {
@@ -101,6 +104,18 @@ const startDownload = async (itemIds: number[], downloadRootPath: string) => {
   }
 }
 
+const failedItemIds = (): number[] => {
+  const tasks = state.job?.tasks ?? []
+  return tasks.filter(task => task.status === 'failed').map(task => task.item_id)
+}
+
+const retryFailed = async (downloadRootPath: string) => {
+  if (state.inProgress) return null
+  const ids = failedItemIds()
+  if (ids.length === 0) return null
+  return startDownload(ids, downloadRootPath)
+}
+
 const cancelDownload = async () => {
   if (!state.job?.job_id || !state.inProgress) return
   try {
@@ -132,7 +147,8 @@ const tryResume = async () => {
     const res = await axios.get<ExternalDownloadJob>(`${API_BASE_URL}/external/downloads/${jobId}`)
     state.job = res.data
     if (isFinalStatus(res.data.status)) {
-      persistJobId(null)
+      // Restore the finished panel (with its failure list) but don't resume
+      // polling; the user dismisses it when done.
       state.inProgress = false
     } else {
       state.inProgress = true
@@ -164,6 +180,7 @@ export const externalDownloadStore = {
   currentBookTotalPages: computed(() => state.job?.current_book_total_pages ?? 0),
   currentBookDownloadedPages: computed(() => state.job?.current_book_downloaded_pages ?? 0),
   tasks: computed(() => state.job?.tasks ?? []),
+  failedTasks: computed(() => (state.job?.tasks ?? []).filter(task => task.status === 'failed')),
   progressPercent: computed(() => {
     const total = state.job?.pages_total ?? 0
     const done = state.job?.pages_done ?? 0
@@ -175,6 +192,7 @@ export const externalDownloadStore = {
     return !job.cancel_requested && !['completed', 'failed', 'canceled', 'canceling'].includes(job.status)
   }),
   startDownload,
+  retryFailed,
   cancelDownload,
   dismissJob,
   onCompleted,

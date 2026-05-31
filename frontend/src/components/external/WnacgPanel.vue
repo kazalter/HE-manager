@@ -40,6 +40,7 @@ const downloadPanelOpen = ref(false)
 const selectedDownloadIds = ref<Set<number>>(new Set())
 const downloadJob = externalDownloadStore.job
 const downloadInProgress = externalDownloadStore.inProgress
+const failedTasks = externalDownloadStore.failedTasks
 const localMangaList = ref<Media[]>([])
 const selectedLocalMedia = ref<Media | null>(null)
 
@@ -207,6 +208,27 @@ const startWnacgDownload = async () => {
     errorMessage.value = err.response?.data?.detail || '启动下载失败'
   }
 }
+
+const retryFailedDownloads = async () => {
+  if (downloadInProgress.value) return
+  const trimmedDownloadRootPath = downloadRootPath.value.trim()
+  if (!trimmedDownloadRootPath) {
+    errorMessage.value = '请先设置下载位置'
+    return
+  }
+  errorMessage.value = ''
+  externalDownloadStore.clearError()
+  const saved = await saveDownloadRootPath()
+  if (!saved) return
+  try {
+    await externalDownloadStore.retryFailed(trimmedDownloadRootPath)
+  } catch (err: any) {
+    console.error('Failed to retry WNACG downloads:', err)
+    errorMessage.value = err.response?.data?.detail || '重试失败'
+  }
+}
+
+const dismissDownloadJob = () => externalDownloadStore.dismissJob()
 
 const fetchSources = async () => {
   const res = await axios.get(`${API_BASE_URL}/external/sources`)
@@ -631,15 +653,34 @@ watch([searchQuery, filteredItems], () => {
         </div>
 
         <ExternalDownloadProgress />
-        <div v-if="downloadJob?.results?.length" class="px-5 py-2 border-b border-white/10 bg-black/15 max-h-24 overflow-y-auto space-y-1">
+        <div
+          v-if="downloadJob && !downloadInProgress"
+          class="px-5 py-3 border-b border-white/10 bg-black/15 flex flex-wrap items-center gap-2"
+        >
           <p
-            v-for="result in downloadJob.results.slice(-5)"
-            :key="`${result.item_id}-${result.status}`"
-            :class="result.status === 'completed' ? 'text-emerald-300' : result.status === 'canceled' ? 'text-amber-300' : 'text-red-300'"
-            class="text-[11px] truncate"
+            class="text-[11px] font-bold mr-auto"
+            :class="failedTasks.length ? 'text-red-300' : 'text-emerald-300'"
           >
-            {{ result.status === 'completed' ? '完成' : '失败' }} · {{ result.title || result.item_id }} {{ result.path ? `· ${result.path}` : result.error ? `· ${result.error}` : '' }}
+            {{ failedTasks.length ? `${failedTasks.length} 本下载失败（明细见上方列表）` : '本次下载已结束' }}
           </p>
+          <button
+            v-if="failedTasks.length"
+            @click="retryFailedDownloads"
+            :disabled="!downloadRootPath.trim()"
+            class="h-8 px-3 rounded-lg bg-accent text-white disabled:opacity-45 disabled:cursor-not-allowed flex items-center gap-1 text-[11px] font-black transition-all"
+            title="只重新下载失败的漫画，已下好的页会跳过"
+          >
+            <RefreshCw :size="13" />
+            重试失败项
+          </button>
+          <button
+            @click="dismissDownloadJob"
+            class="h-8 px-3 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white flex items-center gap-1 text-[11px] font-black transition-all"
+            title="关闭进度面板"
+          >
+            <X :size="13" />
+            关闭
+          </button>
         </div>
 
         <div class="flex-1 overflow-y-auto p-5 space-y-3">
