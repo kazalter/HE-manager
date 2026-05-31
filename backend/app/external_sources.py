@@ -3,13 +3,92 @@ from html import unescape
 from html.parser import HTMLParser
 import re
 from typing import Dict, Iterable, List, Optional
-from urllib.error import HTTPError
 from urllib.parse import urljoin
-from urllib.request import Request, urlopen
+from urllib.request import getproxies
+
+from curl_cffi import requests as cffi_requests
 
 
 WNACG_DEFAULT_URL = "https://www.wnacg.com/users-users_fav.html"
 WNACG_BASE_URL = "https://www.wnacg.com/"
+
+# wnacg sits behind Cloudflare bot management, which fingerprints the TLS/HTTP
+# client (JA3). Python's stdlib ssl fingerprint is deterministically blocked
+# (HTTP 403) and the handshake is sometimes reset outright (SSL UNEXPECTED_EOF).
+# curl_cffi impersonates a real Chrome's TLS+HTTP2 fingerprint so Cloudflare
+# lets us through; the residual flaky 403/network reset is absorbed by retries.
+#
+# Mirror x_import/client.py: keep several browser profiles because some Windows
+# proxy/TUN paths reject a given curl-impersonate handshake with
+# `TLS connect error: invalid library`, and the profile that works varies.
+_IMPERSONATIONS = ("chrome", "chrome124", "edge101", "firefox147")
+_FETCH_RETRIES = 3
+
+
+def _proxies() -> Optional[dict]:
+    # Honour both env (HTTP(S)_PROXY) and the Windows system-proxy registry that
+    # Clash/Mihomo sets when "set as system proxy" is on. Empty dict => direct,
+    # which is correct under TUN-mode tunnels that route transparently.
+    proxies = getproxies()
+    return proxies or None
+
+
+def _request(
+    url: str,
+    *,
+    cookie: str,
+    accept: str,
+    referer: str,
+    timeout: int,
+    method: str = "GET",
+    extra_headers: Optional[dict] = None,
+    retries: int = _FETCH_RETRIES,
+    raise_on_status: bool = True,
+):
+    """Perform a GET/HEAD with browser TLS impersonation, retrying past
+    Cloudflare's intermittent 403/connection-reset and swapping fingerprint
+    profiles on handshake failure. Returns the curl_cffi Response."""
+    headers = {
+        # Deliberately no User-Agent override: impersonate=chrome sets a Chrome
+        # UA + client hints that must match the spoofed TLS fingerprint.
+        "Accept": accept,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": referer,
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    if extra_headers:
+        headers.update(extra_headers)
+
+    last_exc: Optional[Exception] = None
+    last_status: Optional[int] = None
+    # Outer loop swaps the impersonation profile (handshake-level fallback);
+    # inner loop retries transient Cloudflare 403/429/5xx and network resets.
+    for impersonate in _IMPERSONATIONS:
+        for _ in range(max(1, retries)):
+            try:
+                response = cffi_requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    timeout=timeout,
+                    impersonate=impersonate,
+                    proxies=_proxies(),
+                )
+            except Exception as exc:  # network reset / TLS abort -> retry
+                last_exc = exc
+                break  # bad handshake for this profile; try the next one
+            if response.status_code == 200 or not raise_on_status:
+                return response
+            last_status = response.status_code
+            if response.status_code not in (403, 429, 500, 502, 503, 520, 521, 522, 523, 524):
+                return response
+
+    if last_status is not None:
+        raise RuntimeError(f"请求被 Cloudflare 拦截（HTTP {last_status}），多种指纹重试仍失败")
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("请求失败：无法建立到 wnacg 的连接")
 
 
 @dataclass
@@ -177,35 +256,29 @@ def html_has_next_page(html: str) -> bool:
 
 
 def fetch_html(url: str, cookie: str, timeout: int = 20) -> str:
-    headers = {
-        "User-Agent": "HE-Manager/1.0 local favorites sync",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": WNACG_BASE_URL,
-    }
-    if cookie:
-        headers["Cookie"] = cookie
-
-    request = Request(url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:
-        raw = response.read()
-        content_type = response.headers.get("Content-Type", "")
-        encoding_match = re.search(r"charset=([\w-]+)", content_type, re.I)
-        encoding = encoding_match.group(1) if encoding_match else "utf-8"
-        return raw.decode(encoding, errors="replace")
+    response = _request(
+        url,
+        cookie=cookie,
+        accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        referer=WNACG_BASE_URL,
+        timeout=timeout,
+    )
+    raw = response.content
+    content_type = response.headers.get("Content-Type", "")
+    encoding_match = re.search(r"charset=([\w-]+)", content_type, re.I)
+    encoding = encoding_match.group(1) if encoding_match else "utf-8"
+    return raw.decode(encoding, errors="replace")
 
 
 def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: int = 20) -> tuple[bytes, str]:
-    headers = {
-        "User-Agent": "HE-Manager/1.0 local favorites sync",
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "Referer": referer,
-    }
-    if cookie:
-        headers["Cookie"] = cookie
-
-    request = Request(url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:
-        return response.read(), response.headers.get("Content-Type", "application/octet-stream")
+    response = _request(
+        url,
+        cookie=cookie,
+        accept="image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        referer=referer,
+        timeout=timeout,
+    )
+    return response.content, response.headers.get("Content-Type", "application/octet-stream")
 
 
 def _content_length_from_headers(headers) -> Optional[int]:
@@ -221,27 +294,24 @@ def _content_length_from_headers(headers) -> Optional[int]:
 
 
 def fetch_content_length(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: int = 10) -> Optional[int]:
-    headers = {
-        "User-Agent": "HE-Manager/1.0 local favorites sync",
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        "Referer": referer,
-    }
-    if cookie:
-        headers["Cookie"] = cookie
-
+    accept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
     for method in ("HEAD", "GET"):
-        request_headers = dict(headers)
-        if method == "GET":
-            request_headers["Range"] = "bytes=0-0"
-
-        request = Request(url, headers=request_headers, method=method)
+        extra = {"Range": "bytes=0-0"} if method == "GET" else None
         try:
-            with urlopen(request, timeout=timeout) as response:
-                length = _content_length_from_headers(response.headers)
-                if length is not None:
-                    return length
-        except HTTPError as exc:
-            length = _content_length_from_headers(exc.headers)
+            # Best-effort sizing: don't raise on non-200 (e.g. 206/403), just
+            # read whatever length headers came back and move on.
+            response = _request(
+                url,
+                cookie=cookie,
+                accept=accept,
+                referer=referer,
+                timeout=timeout,
+                method=method,
+                extra_headers=extra,
+                retries=2,
+                raise_on_status=False,
+            )
+            length = _content_length_from_headers(response.headers)
             if length is not None:
                 return length
         except Exception:
