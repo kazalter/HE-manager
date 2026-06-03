@@ -14,6 +14,7 @@
 | ⑥ | ASMR 音频来源（同步/下载/播放/字幕/打标/镜像/体积） | ✅ 全部完成 |
 | ⑦ | 手机端传输优化 | 🟡 后端完成；Android 分页搁置 |
 | ⑧ | Android 性能 | ✅ release+BaselineProfile；滑动 Option B |
+| ⑨ | 公网（FRP）暴露安全加固 | 🟡 代码完成；传输层仍待 TLS |
 
 **剩余可执行计划：⑦ Tier2② Android 分页、⑧ Option A、④ 可选后续（跨标题 LSH，见下方）。**
 
@@ -58,6 +59,26 @@
 - 05-19：④ P1 — phash 列+幂等迁移+DCT pHash 计算（4 类媒体复用既有采样）+持久化+缓存失效回填+观察脚本。pytest 36 绿，零回归，未改判定。
 - 05-19：④ P2 — pHash 接入 `classify()`（≤6/≤10 阈值，取较强者，不改 SHA 函数）+ ≥17 veto 降噪；全库回填+重分类（一次性脚本）。真重复召回 47%→100%，noise pair 579→136，孤儿 13→0。汉明距离入 reason（免改前端）。pytest 36 绿。
 - 05-24：① 统计看板优化（P1+P2+P3）。后端：月/日分桶 SQL 化（strftime+GROUP BY），4 endpoint+1 新 `/stats/highlights` 加 30s TTL 缓存，overview 增 `by_type_size`、activity 增 `by_type`；首次冷启 ~26ms，命中 0.004ms。前端 StatsView：① 库增长改"柱（月增）+ 曲线（累计）"；② 活跃热力图加类型 tab（全部/视频/漫画/杂图/音频）；③ 类型/收藏/来源 bars/cards + 关注作品封面可点击跳转 Library；④ 新增 Top 创作者 / 最长视频 / 热门标签三张卡（按媒体数/时长/使用数）。HomeView 加 `?source=` 查询参数。pytest 35 绿，vue-tsc 0。
+
+## ⑨ 公网（FRP）暴露安全加固
+
+为把库通过 FRP / SSH 暴露到公网而做的鉴权与防滥用加固。**代码层已完成，但传输层是当前最大缺口。**
+
+- 06-03（`945047e`）：全局鉴权中间件（除 `/auth/status|login|bootstrap` 白名单外每请求校验 token）+
+  admin 路径 403 门禁 + 30 天 token TTL/登出吊销/登录暴力破解节流（429）+ 默认关 docs + CORS 可配 +
+  安全响应头 + 停止泄露 `absolute_path` + 密码最小长度 6→10。前端 authUrl 拼 token / 401 自动登出 / admin-only 导航。
+- 06-03（`a620b9e`）：堵住登录节流的 **X-Forwarded-For 伪造绕过**（`_client_ip` 默认不信任 XFF，除非
+  `HE_TRUST_FORWARDED_FOR=1`）+ 加**按用户名全局兜底**计数（`HE_LOGIN_MAX_FAILURES_PER_USER`，默认 15/窗口）+
+  `/manga/{id}/page/{i}` 的 500 不再回显原始异常（避免泄露磁盘绝对路径）。回归测试见 `tests/test_login_throttle.py`。
+
+**未竟（运维 / 传输层，代码改不了）：**
+1. **🔴 传输层 TLS** —— 当前 FRP 隧道是**明文 HTTP**，token + 密码明文过中转，被动嗅探即可重放。
+   推荐迁到带 TLS 的通道（Cloudflare Tunnel：免费 HTTPS + 隐藏源站 + 可叠加 Cloudflare Access 前置鉴权；
+   或 FRP 的 https 隧道类型）。这是公网暴露的第一优先级，应用层加固无法替代。
+2. 收紧 CORS：设 `HE_ALLOWED_ORIGINS=https://<域名>` 替代默认 `*`（纵深防御）。
+3. 在意 token 泄露窗口可调短 `HE_ACCESS_TOKEN_TTL_DAYS`（明文传输下收益有限，TLS 后更有意义）。
+
+---
 
 ## 未竟（按优先级）
 
