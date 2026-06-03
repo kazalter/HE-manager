@@ -72,12 +72,8 @@ const persistUrls = () => {
   } catch { /* quota / private-mode — ignore */ }
 }
 
-// Persist credentials in localStorage so a page refresh doesn't make the user
-// retype them every time asmr.one's bearer token expires (which happens often,
-// and the password is mandatory to mint a fresh one). Backend contract is
-// unchanged: the password still travels in /external/asmr/sync once, gets
-// exchanged for a token via asmr_source.login(), and is NOT stored server-side
-// — this is purely a browser-local convenience for personal use.
+// Keep only the username in localStorage. The password travels once to
+// /external/asmr/sync to mint a bearer token, then stays out of browser storage.
 const CREDENTIALS_KEY = 'he-manager:asmr-credentials'
 const loadStoredCredentials = (): { username: string; password: string } => {
   try {
@@ -86,7 +82,7 @@ const loadStoredCredentials = (): { username: string; password: string } => {
     const data = JSON.parse(raw)
     return {
       username: typeof data?.username === 'string' ? data.username : '',
-      password: typeof data?.password === 'string' ? data.password : '',
+      password: '',
     }
   } catch {
     return { username: '', password: '' }
@@ -99,7 +95,6 @@ const persistCredentials = () => {
   try {
     localStorage.setItem(CREDENTIALS_KEY, JSON.stringify({
       username: username.value,
-      password: password.value,
     }))
   } catch { /* quota / private-mode — ignore */ }
 }
@@ -293,9 +288,8 @@ const syncAsmr = async () => {
     hydrateFromSource(source)
     items.value = res.data.items
     goToPage(1)
-    // Intentionally do NOT clear password — the user explicitly asked to keep
-    // credentials around so refresh / token expiry doesn't force retyping.
-    // persistCredentials() runs via the watcher above; nothing to do here.
+    password.value = ''
+    persistCredentials()
     await fetchSources()
   } catch (err: any) {
     console.error('Failed to sync ASMR favorites:', err)
@@ -420,7 +414,7 @@ watch([audioFormatFilter, audioVersionFilter, playlistUrl], persistSourceSetting
 // hydrating guard here — when hydrateFromSource() pulls values from the
 // freshly synced source row, we *want* localStorage to track that copy.
 watch([apiBase, apiMirrors, playlistUrl], persistUrls)
-watch([username, password], persistCredentials)
+watch(username, persistCredentials)
 watch(() => asmrDownloadStore.errorMessage.value, msg => { if (msg) errorMessage.value = msg })
 watch([searchQuery, filteredItems], () => {
   if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
@@ -535,8 +529,8 @@ watch([searchQuery, filteredItems], () => {
         </div>
         <div class="flex items-center justify-between text-[11px] gap-2">
           <p class="text-white/35 flex-1">
-            <span v-if="username || password" class="text-accent/85 font-bold">已记住此浏览器</span>
-            <span v-else>账号密码会保存在此浏览器（localStorage，刷新不丢）。后端不会落库存密码，只用一次换取 token。</span>
+            <span v-if="username" class="text-accent/85 font-bold">已记住用户名，密码不会保存在浏览器</span>
+            <span v-else>密码只用于本次换取 token，不会保存在浏览器或后端。</span>
           </p>
           <button
             v-if="username || password"

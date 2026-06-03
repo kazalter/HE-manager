@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
@@ -401,12 +401,27 @@ def ensure_dedup_indexes():
 ensure_dedup_columns()
 ensure_dedup_indexes()
 
-app = FastAPI(title="HE Manager API")
+_docs_enabled = os.getenv("HE_ENABLE_DOCS", "").lower() in {"1", "true", "yes", "on"}
+app = FastAPI(
+    title="HE Manager API",
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("HE_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    # Keep development and Sakura-FRP ad-hoc access working by default. The app
+    # does not use cookie auth, so credentials stay disabled below.
+    return ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -421,6 +436,81 @@ os.makedirs(EXTERNAL_COVERS_DIR, exist_ok=True)
 DOWNLOAD_JOBS = {}
 MANGA_PROFILE_JOBS = {}
 MANGA_METADATA_JOBS = {}
+LOGIN_FAILURES: dict[str, list[float]] = {}
+
+LOGIN_FAILURE_WINDOW_SECONDS = int(os.getenv("HE_LOGIN_FAILURE_WINDOW_SECONDS", "300"))
+LOGIN_MAX_FAILURES = int(os.getenv("HE_LOGIN_MAX_FAILURES", "5"))
+
+PUBLIC_PATHS = {
+    "/auth/status",
+    "/auth/login",
+    "/auth/bootstrap",
+}
+ADMIN_PREFIXES = (
+    "/users",
+    "/folders",
+    "/search-folder",
+    "/system",
+    "/external",
+    "/x",
+    "/dedup",
+)
+ADMIN_EXACT_PATHS = {
+    "/ai/recommendations/config",
+    "/recommend/manga-profiles/analyze",
+    "/recommend/manga-metadata/analyze",
+}
+
+
+def _public_path(path: str) -> bool:
+    return path in PUBLIC_PATHS
+
+
+def _admin_path(method: str, path: str) -> bool:
+    if path.startswith(ADMIN_PREFIXES):
+        return True
+    if path in ADMIN_EXACT_PATHS:
+        return True
+    if method == "DELETE" and path.startswith("/media/"):
+        return True
+    if method == "POST" and path.startswith("/media/") and path.endswith("/regenerate-thumbnail"):
+        return True
+    return False
+
+
+def _json_error(status_code: int, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
+@app.middleware("http")
+async def require_authenticated_request(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or _public_path(path):
+        response = await call_next(request)
+    else:
+        raw_token = auth.extract_token(
+            authorization=request.headers.get("authorization"),
+            query_token=request.query_params.get("token"),
+        )
+        if not raw_token:
+            return _json_error(401, "Missing access token")
+
+        db = database.SessionLocal()
+        try:
+            user = auth.authenticate_access_token(db, raw_token)
+            if _admin_path(request.method, path) and not user.is_admin:
+                return _json_error(403, "Admin permission required")
+            request.state.current_user = user
+        except HTTPException as exc:
+            return _json_error(exc.status_code, str(exc.detail))
+        finally:
+            db.close()
+        response = await call_next(request)
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
 
 X_ARCHIVE_UPLOAD_DIR = os.path.join(os.getcwd(), "x_archive_uploads")
 os.makedirs(X_ARCHIVE_UPLOAD_DIR, exist_ok=True)
@@ -1428,6 +1518,33 @@ def auth_status(db: Session = Depends(get_db)):
     return {"has_users": db.query(models.User).first() is not None}
 
 
+def _client_ip(request: Request) -> str:
+    # Sakura FRP / reverse proxies usually forward the original IP. Fall back
+    # to the direct peer so local development still has a stable key.
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def _login_failure_key(request: Request, username: str) -> str:
+    return f"{_client_ip(request)}:{username.strip().lower()}"
+
+
+def _pruned_login_failures(key: str) -> list[float]:
+    now = time.time()
+    failures = [ts for ts in LOGIN_FAILURES.get(key, []) if now - ts <= LOGIN_FAILURE_WINDOW_SECONDS]
+    if failures:
+        LOGIN_FAILURES[key] = failures
+    else:
+        LOGIN_FAILURES.pop(key, None)
+    return failures
+
+
+def _record_login_failure(key: str) -> None:
+    failures = _pruned_login_failures(key)
+    failures.append(time.time())
+    LOGIN_FAILURES[key] = failures
+
+
 @app.post("/auth/bootstrap", response_model=schemas.AuthToken)
 def bootstrap_first_user(payload: schemas.UserCreate, db: Session = Depends(get_db)):
     if db.query(models.User).first():
@@ -1447,13 +1564,30 @@ def bootstrap_first_user(payload: schemas.UserCreate, db: Session = Depends(get_
 
 
 @app.post("/auth/login", response_model=schemas.AuthToken)
-def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
+def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+    failure_key = _login_failure_key(request, payload.username)
+    if len(_pruned_login_failures(failure_key)) >= LOGIN_MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试")
+
     user = db.query(models.User).filter(models.User.username == payload.username.strip()).first()
     if not user or not user.is_active or not auth.verify_password(payload.password, user.password_hash):
+        _record_login_failure(failure_key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    LOGIN_FAILURES.pop(failure_key, None)
     token = auth.create_access_token(db, user)
     return {"access_token": token, "user": user}
+
+
+@app.post("/auth/logout")
+def logout(request: Request, db: Session = Depends(get_db)):
+    raw_token = auth.extract_token(
+        authorization=request.headers.get("authorization"),
+        query_token=request.query_params.get("token"),
+    )
+    if raw_token:
+        auth.revoke_access_token(db, raw_token)
+    return {"message": "Logged out"}
 
 
 @app.get("/auth/me", response_model=schemas.UserRead)
@@ -2971,7 +3105,7 @@ def _serialize_dedup_media(media: models.Media) -> dict:
     return {
         "id": media.id,
         "title": media.title,
-        "absolute_path": media.absolute_path,
+        "display_path": media.relative_path or media.title,
         "media_type": media.media_type,
         "extension": media.extension,
         "file_size": media.file_size,

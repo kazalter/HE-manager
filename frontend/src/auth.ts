@@ -1,13 +1,11 @@
 import { reactive } from 'vue'
 import axios from 'axios'
-import { API_BASE_URL } from './config'
+import { API_BASE_URL, AUTH_TOKEN_STORAGE_KEY } from './config'
 import type { User } from './types'
-
-const TOKEN_KEY = 'he_manager_token'
 
 export const authState = reactive({
   ready: false,
-  token: localStorage.getItem(TOKEN_KEY) || '',
+  token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '',
   user: null as User | null,
   hasUsers: true,
   error: '',
@@ -16,13 +14,25 @@ export const authState = reactive({
 const applyToken = (token: string) => {
   authState.token = token
   if (token) {
-    localStorage.setItem(TOKEN_KEY, token)
+    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token)
     axios.defaults.headers.common.Authorization = `Bearer ${token}`
   } else {
-    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
     delete axios.defaults.headers.common.Authorization
   }
 }
+
+axios.interceptors.response.use(
+  response => response,
+  error => {
+    const url = String(error?.config?.url || '')
+    if (error?.response?.status === 401 && !url.includes('/auth/login')) {
+      applyToken('')
+      authState.user = null
+    }
+    return Promise.reject(error)
+  },
+)
 
 export const initAuth = async () => {
   authState.ready = false
@@ -31,20 +41,32 @@ export const initAuth = async () => {
   try {
     const status = await axios.get(`${API_BASE_URL}/auth/status`, { timeout: 5000 })
     authState.hasUsers = Boolean(status.data.has_users)
-
-    if (authState.token) {
-      const me = await axios.get(`${API_BASE_URL}/auth/me`, { timeout: 5000 })
-      authState.user = me.data
-    }
   } catch (err: any) {
     applyToken('')
     authState.user = null
     authState.error = err.code === 'ECONNABORTED'
       ? '连接后端超时，请确认 HE Manager 服务正在运行。'
       : '无法连接后端，请确认 HE Manager 服务正在运行。'
-  } finally {
     authState.ready = true
+    return
   }
+
+  if (authState.token) {
+    try {
+      const me = await axios.get(`${API_BASE_URL}/auth/me`, { timeout: 5000 })
+      authState.user = me.data
+    } catch (err: any) {
+      applyToken('')
+      authState.user = null
+      if (err.response?.status !== 401) {
+        authState.error = err.code === 'ECONNABORTED'
+          ? '连接后端超时，请确认 HE Manager 服务正在运行。'
+          : '无法连接后端，请确认 HE Manager 服务正在运行。'
+      }
+    }
+  }
+
+  authState.ready = true
 }
 
 export const login = async (username: string, password: string) => {
@@ -61,7 +83,12 @@ export const bootstrapAdmin = async (username: string, password: string) => {
   authState.hasUsers = true
 }
 
-export const logout = () => {
+export const logout = async () => {
+  try {
+    if (authState.token) await axios.post(`${API_BASE_URL}/auth/logout`, {})
+  } catch {
+    // Best-effort server-side revocation; local logout should always work.
+  }
   applyToken('')
   authState.user = null
 }

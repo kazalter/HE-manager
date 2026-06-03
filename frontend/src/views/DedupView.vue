@@ -13,7 +13,7 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next'
-import { THUMBNAIL_URL } from '../config'
+import { thumbnailUrl } from '../config'
 import { dedupStore } from '../stores/dedupStore'
 import type { DedupMediaSummary, DuplicateCandidatePair } from '../types'
 
@@ -64,7 +64,7 @@ const detailsText = (m: DedupMediaSummary): string[] => {
 
 const coverSrc = (m: DedupMediaSummary) => {
   if (!m.cover_path) return ''
-  return `${THUMBNAIL_URL}/${m.cover_path}`
+  return thumbnailUrl(m.cover_path)
 }
 
 const levelMeta = (level: string) => {
@@ -294,7 +294,7 @@ onMounted(async () => {
                 </div>
                 <div class="min-w-0 flex-1 space-y-1.5">
                   <p class="text-sm font-bold text-white line-clamp-2 break-all">{{ pair.existing.title }}</p>
-                  <p class="text-[10px] text-white/40 break-all line-clamp-2 font-mono">{{ pair.existing.absolute_path }}</p>
+                  <p class="text-[10px] text-white/40 break-all line-clamp-2 font-mono">{{ pair.existing.display_path }}</p>
                   <div class="flex flex-wrap items-center gap-1.5 text-[11px] text-white/55">
                     <span v-for="(part, idx) in detailsText(pair.existing)" :key="`e${idx}`" class="px-1.5 py-0.5 rounded bg-white/5">
                       {{ part }}
@@ -318,7 +318,7 @@ onMounted(async () => {
                 </div>
                 <div class="min-w-0 flex-1 space-y-1.5">
                   <p class="text-sm font-bold text-white line-clamp-2 break-all">{{ pair.candidate.title }}</p>
-                  <p class="text-[10px] text-white/40 break-all line-clamp-2 font-mono">{{ pair.candidate.absolute_path }}</p>
+                  <p class="text-[10px] text-white/40 break-all line-clamp-2 font-mono">{{ pair.candidate.display_path }}</p>
                   <div class="flex flex-wrap items-center gap-1.5 text-[11px] text-white/55">
                     <span v-for="(part, idx) in detailsText(pair.candidate)" :key="`c${idx}`" class="px-1.5 py-0.5 rounded bg-white/5">
                       {{ part }}
@@ -394,7 +394,7 @@ onMounted(async () => {
             </div>
             <div class="rounded-xl bg-black/30 border border-white/10 p-3 text-xs text-white/65 space-y-1">
               <p class="font-bold text-white truncate">{{ confirmDeletePair.target === 'existing' ? confirmDeletePair.pair.existing.title : confirmDeletePair.pair.candidate.title }}</p>
-              <p class="font-mono text-white/45 break-all line-clamp-2">{{ confirmDeletePair.target === 'existing' ? confirmDeletePair.pair.existing.absolute_path : confirmDeletePair.pair.candidate.absolute_path }}</p>
+              <p class="font-mono text-white/45 break-all line-clamp-2">{{ confirmDeletePair.target === 'existing' ? confirmDeletePair.pair.existing.display_path : confirmDeletePair.pair.candidate.display_path }}</p>
             </div>
             <div class="flex gap-2.5 pt-1">
               <button

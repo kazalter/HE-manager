@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import hmac
+import os
 import secrets
 
-from fastapi import Depends, Header, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from . import models
@@ -11,6 +12,7 @@ from .database import get_db
 
 
 PASSWORD_ITERATIONS = 260_000
+ACCESS_TOKEN_TTL_DAYS = int(os.getenv("HE_ACCESS_TOKEN_TTL_DAYS", "30"))
 
 
 def hash_password(password: str) -> str:
@@ -56,15 +58,11 @@ def token_from_authorization(authorization: str | None) -> str | None:
     return authorization[len(prefix):].strip() or None
 
 
-def get_current_user(
-    authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
-    db: Session = Depends(get_db),
-) -> models.User:
-    raw_token = token or token_from_authorization(authorization)
-    if not raw_token:
-        raise HTTPException(status_code=401, detail="Missing access token")
+def extract_token(authorization: str | None = None, query_token: str | None = None) -> str | None:
+    return query_token or token_from_authorization(authorization)
 
+
+def authenticate_access_token(db: Session, raw_token: str) -> models.User:
     db_token = (
         db.query(models.AccessToken)
         .filter(models.AccessToken.token_hash == hash_token(raw_token), models.AccessToken.revoked == False)
@@ -73,9 +71,44 @@ def get_current_user(
     if not db_token or not db_token.user or not db_token.user.is_active:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
+    if db_token.created_at and datetime.utcnow() - db_token.created_at > timedelta(days=ACCESS_TOKEN_TTL_DAYS):
+        db_token.revoked = True
+        db.commit()
+        raise HTTPException(status_code=401, detail="Access token expired")
+
     db_token.last_used_at = datetime.utcnow()
     db.commit()
     return db_token.user
+
+
+def revoke_access_token(db: Session, raw_token: str) -> bool:
+    db_token = (
+        db.query(models.AccessToken)
+        .filter(models.AccessToken.token_hash == hash_token(raw_token), models.AccessToken.revoked == False)
+        .first()
+    )
+    if not db_token:
+        return False
+    db_token.revoked = True
+    db.commit()
+    return True
+
+
+def get_current_user(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> models.User:
+    state_user = getattr(request.state, "current_user", None)
+    if state_user is not None:
+        return state_user
+
+    raw_token = extract_token(authorization, token)
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    return authenticate_access_token(db, raw_token)
 
 
 def require_admin(user: models.User = Depends(get_current_user)) -> models.User:

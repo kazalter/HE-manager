@@ -4,7 +4,7 @@ import axios from 'axios'
 import { ChevronLeft, ChevronRight, Maximize, Minimize, Plus, Star, Tag as TagIcon, Trash2, X, FileQuestion, RefreshCw } from 'lucide-vue-next'
 import Artplayer from 'artplayer'
 import artplayerPluginVttThumbnail from 'artplayer-plugin-vtt-thumbnail'
-import { API_BASE_URL, STREAM_URL, THUMBNAIL_URL } from '../config'
+import { API_BASE_URL, STREAM_URL, THUMBNAIL_URL, authUrl, thumbnailUrl } from '../config'
 import type { Media } from '../types'
 
 const props = defineProps<{
@@ -66,11 +66,11 @@ const VOLUME_WHEEL_HOVER_SELECTOR = VOLUME_WHEEL_SELECTOR
   .join(', ')
 
 const pageUrl = computed(() => {
-  if (currentMedia.value.media_type === 'image') return `${API_BASE_URL}/stream/${currentMedia.value.id}`
-  return `${API_BASE_URL}/manga/${currentMedia.value.id}/page/${currentPage.value}`
+  if (currentMedia.value.media_type === 'image') return authUrl(`${API_BASE_URL}/stream/${currentMedia.value.id}`)
+  return authUrl(`${API_BASE_URL}/manga/${currentMedia.value.id}/page/${currentPage.value}`)
 })
-const videoUrl = computed(() => `${STREAM_URL}/${currentMedia.value.id}`)
-const coverUrl = computed(() => currentMedia.value.cover_path ? `${THUMBNAIL_URL}/${currentMedia.value.cover_path}` : '')
+const videoUrl = computed(() => authUrl(`${STREAM_URL}/${currentMedia.value.id}`))
+const coverUrl = computed(() => thumbnailUrl(currentMedia.value.cover_path))
 const isImage = computed(() => currentMedia.value.media_type === 'image')
 const isManga = computed(() => currentMedia.value.media_type === 'manga')
 const isVideo = computed(() => currentMedia.value.media_type === 'video')
@@ -87,7 +87,7 @@ const audioLoading = ref(false)
 const audioError = ref('')
 const audioElRef = ref<HTMLAudioElement | null>(null)
 const audioTrackStreamUrl = computed(() =>
-  `${API_BASE_URL}/audio/${currentMedia.value.id}/track/${audioCurrentIndex.value}`,
+  authUrl(`${API_BASE_URL}/audio/${currentMedia.value.id}/track/${audioCurrentIndex.value}`),
 )
 
 const fetchAudioTracks = async () => {
@@ -501,7 +501,10 @@ const initArtplayer = async () => {
     try {
       const vttRoute = `${API_BASE_URL}/thumbnails/${currentMedia.value.cover_path.replace('.jpg', '.vtt')}`
       const res = await axios.get(vttRoute)
-      const text = String(res.data).replace(/(?:\/thumbnails\/)?([^\s]+\.jpg(#xywh=[0-9,]+)?)/g, `${API_BASE_URL}/thumbnails/$1`)
+      const text = String(res.data).replace(
+        /(?:\/thumbnails\/)?([^\s#]+\.jpg)(#xywh=[0-9,]+)?/g,
+        (_match, file, xywh = '') => `${authUrl(`${THUMBNAIL_URL}/${file}`)}${xywh}`,
+      )
       const blob = new Blob([text], { type: 'text/vtt' })
       const nextVttBlobUrl = URL.createObjectURL(blob)
 

@@ -27,7 +27,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,12 +49,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hemanager.mobile.ApiClient
@@ -82,6 +85,8 @@ import org.json.JSONObject
 @Composable
 fun LoginScreen(
     initialServer: String,
+    serverHistory: List<String>,
+    onRemoveServer: (String) -> Unit,
     onLoggedIn: (String, String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -89,16 +94,16 @@ fun LoginScreen(
     val userFocus = remember { FocusRequester() }
     val passFocus = remember { FocusRequester() }
 
-    var server by remember { mutableStateOf(if (initialServer.isBlank()) "http://" else initialServer) }
+    var server by remember { mutableStateOf(initialServer) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
 
     fun submit(bootstrap: Boolean) {
-        val targetServer = ApiClient.trimSlash(server)
-        if (!targetServer.startsWith("http://") && !targetServer.startsWith("https://")) {
-            message = "// ERR · 服务器地址需以 http:// 或 https:// 开头"
+        val targetServer = normalizeServerUrl(server)
+        if (targetServer.isBlank()) {
+            message = "// ERR · 请填写服务器地址"
             return
         }
         if (username.isBlank() || password.isBlank()) {
@@ -187,6 +192,13 @@ fun LoginScreen(
                 keyboardType = KeyboardType.Uri,
                 imeAction = ImeAction.Next,
                 onImeAction = { userFocus.requestFocus() },
+            )
+            Spacer(Modifier.height(18.dp))
+            ServerHistoryPanel(
+                history = serverHistory,
+                selectedServer = normalizeServerUrl(server),
+                onSelect = { server = it },
+                onRemove = onRemoveServer,
             )
             Spacer(Modifier.height(18.dp))
             TerminalField(
@@ -297,6 +309,140 @@ fun LoginScreen(
             Spacer(Modifier.height(28.dp))
         }
     }
+}
+
+private fun normalizeServerUrl(value: String): String {
+    val text = ApiClient.trimSlash(value)
+    if (text.isBlank() || text.equals("http://", ignoreCase = true) || text.equals("https://", ignoreCase = true)) {
+        return ""
+    }
+    return if (text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true)) {
+        text
+    } else {
+        "https://$text"
+    }
+}
+
+@Composable
+private fun ServerHistoryPanel(
+    history: List<String>,
+    selectedServer: String,
+    onSelect: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    AnimatedVisibility(
+        visible = history.isNotEmpty(),
+        enter = fadeIn(tween(180)),
+        exit = fadeOut(tween(160)),
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Icon(
+                    imageVector = Icons.Default.History,
+                    contentDescription = null,
+                    tint = HeColors.Yellow,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "SERVER HISTORY",
+                    color = HeColors.Yellow,
+                    fontFamily = Oxanium,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.5.sp,
+                    letterSpacing = 2.sp,
+                )
+                Text(
+                    text = "历史服务器",
+                    color = HeColors.OpWhiteMuted,
+                    fontFamily = NotoSansSC,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                CodeChip("${history.size} SAVED", color = HeColors.OpWhiteFaint)
+            }
+            Spacer(Modifier.height(8.dp))
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                history.forEachIndexed { index, item ->
+                    ServerHistoryRow(
+                        server = item,
+                        code = "SRV-${(index + 1).toString().padStart(2, '0')}",
+                        selected = item == selectedServer,
+                        onSelect = { onSelect(item) },
+                        onRemove = { onRemove(item) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerHistoryRow(
+    server: String,
+    code: String,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val shape = CutCornerShape(8.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (selected) HeColors.YellowSoft else HeColors.Panel.copy(alpha = 0.72f))
+            .border(1.dp, if (selected) HeColors.YellowDim else HeColors.HairlineMid, shape)
+            .clickable(onClick = onSelect)
+            .padding(start = 12.dp, top = 10.dp, end = 8.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Diamond(
+            size = 7.dp,
+            filled = selected,
+            color = if (selected) HeColors.Yellow else HeColors.OpWhiteMuted,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            CodeChip(code, color = if (selected) HeColors.Yellow else HeColors.OpWhiteMuted)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = displayServer(server),
+                color = if (selected) HeColors.OpWhite else HeColors.OpWhiteSoft,
+                fontFamily = GeistMono,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CutCornerShape(7.dp))
+                .background(HeColors.OpDanger.copy(alpha = 0.10f))
+                .border(1.dp, HeColors.OpDanger.copy(alpha = 0.28f), CutCornerShape(7.dp))
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "删除服务器记录",
+                tint = HeColors.OpDanger,
+                modifier = Modifier.size(17.dp),
+            )
+        }
+    }
+}
+
+private fun displayServer(value: String): String {
+    return ApiClient.trimSlash(value)
+        .removePrefix("https://")
+        .removePrefix("http://")
 }
 
 @Composable

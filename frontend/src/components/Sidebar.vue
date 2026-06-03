@@ -96,7 +96,7 @@ const toggle = () => {
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">收藏</span>
       </router-link>
 
-      <router-link to="/external" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="外部收藏">
+      <router-link v-if="user?.is_admin" to="/external" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="外部收藏">
         <Globe2 :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">外部收藏</span>
       </router-link>
@@ -116,14 +116,14 @@ const toggle = () => {
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">统计</span>
       </router-link>
 
-      <router-link to="/dedup" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="重复管理">
+      <router-link v-if="user?.is_admin" to="/dedup" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="重复管理">
         <CopyMinus :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">重复管理</span>
       </router-link>
     </nav>
 
     <div class="mt-auto space-y-2 pt-6 border-t border-white/5 overflow-hidden">
-      <router-link to="/settings" :class="bottomLinkClass" active-class="bg-white/10 text-white" title="设置">
+      <router-link v-if="user?.is_admin" to="/settings" :class="bottomLinkClass" active-class="bg-white/10 text-white" title="设置">
         <SettingsIcon :size="22" class="group-hover:rotate-45 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">设置</span>
       </router-link>

@@ -527,14 +527,21 @@ class MainActivity : ComponentActivity() {
         val prefs = remember { HePrefs(this) }
         var serverUrl by remember { mutableStateOf(prefs.serverUrl) }
         var token by remember { mutableStateOf(prefs.token) }
+        var serverHistory by remember { mutableStateOf(prefs.serverHistory) }
 
         if (serverUrl.isBlank() || token.isBlank()) {
             LoginScreen(
                 initialServer = serverUrl,
+                serverHistory = serverHistory,
+                onRemoveServer = {
+                    prefs.removeServerHistory(it)
+                    serverHistory = prefs.serverHistory
+                },
                 onLoggedIn = { nextServer, nextToken ->
                     serverUrl = nextServer
                     token = nextToken
                     prefs.saveCredentials(nextServer, nextToken)
+                    serverHistory = prefs.serverHistory
                 }
             )
         } else {

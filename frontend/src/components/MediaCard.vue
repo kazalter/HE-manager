@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Book, Eye, Film, Headphones, Image as ImageIcon, Play, Star } from 'lucide-vue-next'
-import { THUMBNAIL_URL } from '../config'
+import { thumbnailUrl } from '../config'
 import type { Media } from '../types'
 
 defineProps<{
@@ -9,7 +9,7 @@ defineProps<{
 
 const getThumb = (path: string | null) => {
   if (!path) return 'https://via.placeholder.com/400x600?text=No+Cover'
-  return `${THUMBNAIL_URL}/${path}`
+  return thumbnailUrl(path)
 }
 
 const formatSize = (bytes: number) => {

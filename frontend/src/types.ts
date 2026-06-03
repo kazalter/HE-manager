@@ -2,7 +2,6 @@ export interface Media {
     id: number;
     title: string;
     relative_path: string;
-    absolute_path: string;
     media_type: 'video' | 'manga' | 'image' | 'audio';
     extension: string;
     file_size: number;
@@ -41,7 +40,7 @@ export interface DedupSummary {
 export interface DedupMediaSummary {
     id: number;
     title: string;
-    absolute_path: string;
+    display_path: string;
     media_type: 'video' | 'manga' | 'image';
     extension: string | null;
     file_size: number | null;

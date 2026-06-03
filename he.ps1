@@ -30,7 +30,8 @@
 #>
 param(
     [switch]$Server,
-    [switch]$CleanCache
+    [switch]$CleanCache,
+    [switch]$Headless
 )
 
 $ErrorActionPreference = "Stop"
@@ -296,7 +297,7 @@ function Stop-Child($Proc) {
 
 $backend = $null
 $frontend = $null
-$prevCtrlC = [Console]::TreatControlCAsInput
+$prevCtrlC = if ($Headless) { $false } else { [Console]::TreatControlCAsInput }
 
 try {
     Write-Host "==========================================" -ForegroundColor Cyan
@@ -345,7 +346,7 @@ try {
     if (-not $Server) {
         if (Wait-Port $FrontendPort) { Write-Host "  [OK] frontend :$FrontendPort" -ForegroundColor Green }
         else                         { Write-Host "  [!] frontend timed out, continuing" -ForegroundColor Yellow }
-        Start-Process "http://localhost:$FrontendPort" | Out-Null
+        if (-not $Headless) { Start-Process "http://localhost:$FrontendPort" | Out-Null }
     }
 
     Write-Host ""
@@ -367,11 +368,11 @@ try {
     Write-Host "==========================================" -ForegroundColor Cyan
     Write-Host ""
 
-    [Console]::TreatControlCAsInput = $true
+    if (-not $Headless) { [Console]::TreatControlCAsInput = $true }
     while ($true) {
         if ($backend.HasExited)  { Write-Host "[BE] process exited ($($backend.ExitCode))"  -ForegroundColor Yellow; break }
         if ($frontend -and $frontend.HasExited) { Write-Host "[FE] process exited ($($frontend.ExitCode))" -ForegroundColor Yellow; break }
-        if ([Console]::KeyAvailable) {
+        if (-not $Headless -and [Console]::KeyAvailable) {
             $k = [Console]::ReadKey($true)
             $isCtrlC = ($k.Modifiers -band [ConsoleModifiers]::Control) -and ($k.Key -eq 'C')
             if ($isCtrlC -or $k.Key -eq 'Q') { Write-Host ""; Write-Host "Stopping..." -ForegroundColor Yellow; break }
@@ -380,7 +381,7 @@ try {
     }
 }
 finally {
-    [Console]::TreatControlCAsInput = $prevCtrlC
+    if (-not $Headless) { [Console]::TreatControlCAsInput = $prevCtrlC }
     Stop-Child $backend
     Stop-Child $frontend
     # Belt-and-suspenders: free the ports in case a grandchild lingered.

@@ -9,13 +9,13 @@ class AuthStatus(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=40)
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=10, max_length=128)
     is_admin: bool = False
 
 
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(default=None, min_length=3, max_length=40)
-    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+    password: Optional[str] = Field(default=None, min_length=10, max_length=128)
     is_admin: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -53,7 +53,6 @@ class Tag(TagBase):
 class MediaBase(BaseModel):
     title: str
     relative_path: str
-    absolute_path: str
     media_type: str
     extension: str
     file_size: int
@@ -412,7 +411,7 @@ class DedupSummary(BaseModel):
 class DedupMediaSummary(BaseModel):
     id: int
     title: str
-    absolute_path: str
+    display_path: str
     media_type: str
     extension: Optional[str] = None
     file_size: Optional[int] = None
