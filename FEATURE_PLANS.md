@@ -14,7 +14,7 @@
 | ⑥ | ASMR 音频来源（同步/下载/播放/字幕/打标/镜像/体积） | ✅ 全部完成 |
 | ⑦ | 手机端传输优化 | 🟡 后端完成；Android 分页搁置 |
 | ⑧ | Android 性能 | ✅ release+BaselineProfile；滑动 Option B |
-| ⑨ | 公网（FRP）暴露安全加固 | 🟡 代码完成；传输层仍待 TLS |
+| ⑨ | 公网（FRP）暴露安全加固 | ✅ 代码完成；安卓端经 Sakura https 全程加密 |
 
 **剩余可执行计划：⑦ Tier2② Android 分页、⑧ Option A、④ 可选后续（跨标题 LSH，见下方）。**
 
@@ -62,7 +62,7 @@
 
 ## ⑨ 公网（FRP）暴露安全加固
 
-为把库通过 FRP / SSH 暴露到公网而做的鉴权与防滥用加固。**代码层已完成，但传输层是当前最大缺口。**
+为把库通过 FRP 暴露到公网而做的鉴权与防滥用加固。**代码层已完成；传输层对实际使用场景（仅安卓 App）已加密。**
 
 - 06-03（`945047e`）：全局鉴权中间件（除 `/auth/status|login|bootstrap` 白名单外每请求校验 token）+
   admin 路径 403 门禁 + 30 天 token TTL/登出吊销/登录暴力破解节流（429）+ 默认关 docs + CORS 可配 +
@@ -71,12 +71,15 @@
   `HE_TRUST_FORWARDED_FOR=1`）+ 加**按用户名全局兜底**计数（`HE_LOGIN_MAX_FAILURES_PER_USER`，默认 15/窗口）+
   `/manga/{id}/page/{i}` 的 500 不再回显原始异常（避免泄露磁盘绝对路径）。回归测试见 `tests/test_login_throttle.py`。
 
-**未竟（运维 / 传输层，代码改不了）：**
-1. **🔴 传输层 TLS** —— 当前 FRP 隧道是**明文 HTTP**，token + 密码明文过中转，被动嗅探即可重放。
-   推荐迁到带 TLS 的通道（Cloudflare Tunnel：免费 HTTPS + 隐藏源站 + 可叠加 Cloudflare Access 前置鉴权；
-   或 FRP 的 https 隧道类型）。这是公网暴露的第一优先级，应用层加固无法替代。
-2. 收紧 CORS：设 `HE_ALLOWED_ORIGINS=https://<域名>` 替代默认 `*`（纵深防御）。
-3. 在意 token 泄露窗口可调短 `HE_ACCESS_TOKEN_TTL_DAYS`（明文传输下收益有限，TLS 后更有意义）。
+**传输层现状（运维，代码改不了）：**
+- **实际使用 = 仅手机安卓 App。** 安卓 App 默认走 https（`normalizeServerUrl` 裸域名自动补 `https://`），
+  服务器地址填 `https://<sakura 子域>` 即由 Sakura 边缘证书加密第①段（手机↔Sakura）；第②段（Sakura↔本机 frpc）
+  由 Sakura 客户端默认 TLS 加密。**两段都加密后，安卓端 token 全程不可被路上嗅探。**
+- **唯一残留**：Sakura 在边缘解密后转发给本机，故需信任 Sakura 中转服务器本身——这是任何穿透/CDN（含 Cloudflare）
+  共有的，非本项目可消除。
+- **若将来改用网页 UI 走 FRP**（目前不用）：`config.ts` 默认 base URL 硬编码 `:8010`，会连不上 Sakura 的 443，
+  需 `VITE_API_BASE_URL=https://<子域>` 重新构建 + 设 `HE_ALLOWED_ORIGINS` 收紧 CORS + 可加 HSTS 头。
+- 在意 token 泄露窗口可调短 `HE_ACCESS_TOKEN_TTL_DAYS`（默认 30 天）。
 
 ---
 
