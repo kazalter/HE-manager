@@ -1,6 +1,6 @@
 import sqlite3, os, sys, collections
 
-DB = r"D:\HE manager\backend\app\library.db"
+DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "library.db")
 c = sqlite3.connect(DB)
 c.row_factory = sqlite3.Row
 

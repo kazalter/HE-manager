@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$fontDir = "D:\HE manager\android-app\app\src\main\res\font"
+$fontDir = Join-Path $PSScriptRoot "..\android-app\app\src\main\res\font"
 
 # Oxanium — sourcefoundry/Oxanium
 $ox = "https://raw.githubusercontent.com/sourcefoundry/Oxanium/master/fonts/ttf"

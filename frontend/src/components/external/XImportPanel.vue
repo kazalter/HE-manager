@@ -266,7 +266,7 @@ onUnmounted(() => {
             <input
               v-model="downloadRootPath"
               type="text"
-              placeholder="例如 D:\HE manager\external_downloads"
+              placeholder="例如 C:\Users\25768\Desktop\HE_Project\HE_manager\external_downloads"
               class="flex-1 bg-black/20 border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-accent/50"
             />
             <button

@@ -259,7 +259,7 @@ function Start-Child($FileName, $Arguments, $WorkDir, $Prefix, $Color, $LogPath)
     $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     $psi.EnvironmentVariables["PYTHONUTF8"]       = "1"
     # watchfiles' native FS events are unreliable on Windows when the watched
-    # path contains a space (this repo is "D:\HE manager\..."), so edited
+    # path contains a space (this repo is "C:\Users\25768\Desktop\HE_Project\HE_manager\..."), so edited
     # backend code silently fails to hot-reload. Polling is reliable
     # regardless of the path; harmless for the vite child (it ignores it).
     $psi.EnvironmentVariables["WATCHFILES_FORCE_POLLING"] = "1"

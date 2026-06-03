@@ -70,7 +70,7 @@
   debug 签名可覆盖装，跳 lint 提速）。**判断启动卡/滑动顺必须用 release，debug 不代表性能。**
   Baseline Profile 首启后台装，第二次冷启才是优化后体感。
 - 设备：两台连着，脚本只认 `f…` 那台、排除 `hbl…`（`ANDROID_SERIAL` 钉死，防双装）。
-- 安卓构建验证：`gradlew.bat -p "D:\HE manager\android-app" :app:assembleDebug -q`（无输出=成功）。
+- 安卓构建验证：`gradlew.bat -p "C:\Users\25768\Desktop\HE_Project\HE_manager\android-app" :app:assembleDebug -q`（无输出=成功）。
 
 ## 改动边界（重要）
 
