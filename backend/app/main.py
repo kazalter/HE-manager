@@ -440,6 +440,17 @@ LOGIN_FAILURES: dict[str, list[float]] = {}
 
 LOGIN_FAILURE_WINDOW_SECONDS = int(os.getenv("HE_LOGIN_FAILURE_WINDOW_SECONDS", "300"))
 LOGIN_MAX_FAILURES = int(os.getenv("HE_LOGIN_MAX_FAILURES", "5"))
+# Per-username backstop independent of client IP. The IP+username bucket above
+# can be defeated by an attacker who rotates a forged X-Forwarded-For on every
+# request (each forged IP gets its own bucket); this counter keys on the
+# username alone so it survives that, while staying loose enough not to lock a
+# legitimate user out from fat-fingering the password a few times.
+LOGIN_MAX_FAILURES_PER_USER = int(os.getenv("HE_LOGIN_MAX_FAILURES_PER_USER", "15"))
+# Only honour X-Forwarded-For when explicitly told to (i.e. a trusted reverse
+# proxy sets it). Off by default so a public client cannot spoof its source IP
+# to escape the throttle — under a raw FRP tunnel every request then shares the
+# frpc loopback peer, which is exactly the conservative behaviour we want.
+_TRUST_FORWARDED_FOR = os.getenv("HE_TRUST_FORWARDED_FOR", "").lower() in {"1", "true", "yes", "on"}
 
 PUBLIC_PATHS = {
     "/auth/status",
@@ -1519,10 +1530,16 @@ def auth_status(db: Session = Depends(get_db)):
 
 
 def _client_ip(request: Request) -> str:
-    # Sakura FRP / reverse proxies usually forward the original IP. Fall back
-    # to the direct peer so local development still has a stable key.
-    forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
-    return forwarded or (request.client.host if request.client else "unknown")
+    # X-Forwarded-For is client-controllable over a raw FRP tunnel, so only
+    # trust it when a known reverse proxy is in front (HE_TRUST_FORWARDED_FOR).
+    # Otherwise use the direct peer — under FRP that collapses every public
+    # caller onto the frpc loopback peer, which means the throttle can't be
+    # sidestepped by forging a fresh source IP per request.
+    if _TRUST_FORWARDED_FOR:
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        if forwarded:
+            return forwarded
+    return request.client.host if request.client else "unknown"
 
 
 def _login_failure_key(request: Request, username: str) -> str:
@@ -1566,15 +1583,23 @@ def bootstrap_first_user(payload: schemas.UserCreate, db: Session = Depends(get_
 @app.post("/auth/login", response_model=schemas.AuthToken)
 def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
     failure_key = _login_failure_key(request, payload.username)
-    if len(_pruned_login_failures(failure_key)) >= LOGIN_MAX_FAILURES:
+    # Per-username key has no IP component, so a forged X-Forwarded-For can't
+    # spawn a fresh bucket to dodge it.
+    user_key = f"user:{payload.username.strip().lower()}"
+    if (
+        len(_pruned_login_failures(failure_key)) >= LOGIN_MAX_FAILURES
+        or len(_pruned_login_failures(user_key)) >= LOGIN_MAX_FAILURES_PER_USER
+    ):
         raise HTTPException(status_code=429, detail="登录失败次数过多，请稍后再试")
 
     user = db.query(models.User).filter(models.User.username == payload.username.strip()).first()
     if not user or not user.is_active or not auth.verify_password(payload.password, user.password_hash):
         _record_login_failure(failure_key)
+        _record_login_failure(user_key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     LOGIN_FAILURES.pop(failure_key, None)
+    LOGIN_FAILURES.pop(user_key, None)
     token = auth.create_access_token(db, user)
     return {"access_token": token, "user": user}
 
@@ -2765,7 +2790,11 @@ def get_manga_page(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Don't echo the raw exception — it can carry absolute filesystem paths
+        # (zip member names, on-disk locations) that we deliberately keep out of
+        # the API surface. Log server-side, return a generic message.
+        print(f"  ! Failed to serve manga page {media_id}/{page_index}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read page")
 
 
 @app.post("/media/{media_id}/regenerate-thumbnail")
