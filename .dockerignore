@@ -1,0 +1,32 @@
+# Keep the build context tiny + the real data out of the image.
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Not part of the backend-only image.
+frontend/
+android-app/
+scripts/
+he.ps1
+he-server.ps1
+*.bat
+
+# Data / generated / mounted at runtime, never baked in.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+backend/backups/
+backend/tests/
+.thumbnails/
+covers/
+external_downloads/
+x_archive_uploads/
+data/
+volumes/
+*.log
+
+# Local envs.
+.venv/
+venv/

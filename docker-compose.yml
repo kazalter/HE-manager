@@ -1,0 +1,39 @@
+# HE Manager — backend-only stack for the Linux mini-host (x86_64 / N100).
+#
+#   Prepare now in a VM:   docker compose build && docker compose up -d
+#   On the real host:      mount the media HDD first (see below), then the same.
+#
+# The Android app connects to the host (directly, or via the Sakura FRP https
+# subdomain) on port 8010. No web frontend is served here by design.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: he-manager-backend:latest
+    container_name: he-manager
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      # --- security knobs (added in commits 945047e / a620b9e) ---
+      HE_ACCESS_TOKEN_TTL_DAYS: "30"
+      HE_LOGIN_MAX_FAILURES: "5"
+      HE_LOGIN_MAX_FAILURES_PER_USER: "15"
+      HE_TRUST_FORWARDED_FOR: "0"   # raw FRP tunnel: never trust client X-Forwarded-For
+      HE_ENABLE_DOCS: "0"           # keep /docs /redoc /openapi.json closed on the public net
+      # HE_ALLOWED_ORIGINS: "https://<your-sakura-subdomain>"  # only if you ever expose the web UI
+      HE_DATABASE_URL: "sqlite:////data/library.db"
+    volumes:
+      # SQLite DB (+ its -wal/-shm). Back up THIS dir; it is the whole library
+      # metadata (tags, favourites, download state, …). Never baked into image.
+      - ./data:/data
+      # Generated thumbnails + external cover cache — regenerable, but kept so
+      # the UI isn't blank on first boot after a move.
+      - ./volumes/thumbnails:/srv/.thumbnails
+      - ./volumes/covers:/covers
+      # The external media HDD. Mount it on the HOST first (fstab by UUID, e.g.
+      # /mnt/hdd), then expose the SAME path into the container. Because the
+      # container path == host path == /mnt/hdd, the DB's download_root_path /
+      # absolute_path columns are rewritten to /mnt/hdd/... once and stay valid.
+      - /mnt/hdd:/mnt/hdd

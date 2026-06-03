@@ -1,0 +1,14 @@
+# Backend runtime deps, pinned to the versions proven working in the
+# Windows Python 3.12 env (see CLAUDE.md). opencv is the headless build for
+# servers — same cv2 module, no GUI/X11 libs. Transitive deps (starlette,
+# anyio, cffi, …) are resolved by pip.
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+pydantic==2.13.3
+SQLAlchemy==2.0.49
+pillow==12.2.0
+opencv-python-headless==4.13.0.92
+numpy==2.4.4
+curl_cffi==0.15.0
+python-multipart==0.0.27
+jieba==0.42.1

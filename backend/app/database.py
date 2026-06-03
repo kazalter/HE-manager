@@ -3,9 +3,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# SQLite database file path (absolute path based on this file's location)
+# SQLite database file path (absolute path based on this file's location).
+# HE_DATABASE_URL overrides it (e.g. point at a mounted volume in Docker:
+# sqlite:////data/library.db). Unset -> library.db next to the app package, so
+# the Windows / bare-metal setup is unchanged.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SQLALCHEMY_DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'library.db')}"
+_DEFAULT_DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'library.db')}"
+SQLALCHEMY_DATABASE_URL = os.getenv("HE_DATABASE_URL", _DEFAULT_DATABASE_URL)
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, 
