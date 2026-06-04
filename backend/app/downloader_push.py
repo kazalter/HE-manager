@@ -14,7 +14,9 @@ import os
 from typing import Optional
 from urllib.parse import urlsplit
 
-import httpx
+# 复用项目已有的 curl_cffi（不引入 httpx，避免改 requirements 触发国内 pip 慢重装）。
+# 推送目标是本机网关，不需要 TLS 指纹伪装，默认普通请求即可。
+from curl_cffi import requests as cffi_requests
 
 GATEWAY_URL = os.environ.get("HE_DOWNLOADER_URL", "").strip().rstrip("/")
 GATEWAY_TOKEN = os.environ.get("HE_DOWNLOADER_TOKEN", "").strip()
@@ -54,19 +56,16 @@ def push_batch(
     if callback_url:
         payload["callback_url"] = callback_url
     try:
-        resp = httpx.post(
+        resp = cffi_requests.post(
             f"{GATEWAY_URL}/jobs/batch", json=payload, headers=_auth_headers(), timeout=timeout
         )
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as exc:
+    except Exception as exc:  # noqa: BLE001 — 网络层错误统一包装
+        raise DownloaderPushError(f"连不上下载中心：{exc}") from exc
+    if resp.status_code != 200:
         detail = ""
         try:
-            detail = exc.response.json().get("detail", "")
+            detail = resp.json().get("detail", "")
         except Exception:  # noqa: BLE001
             pass
-        raise DownloaderPushError(
-            f"下载中心拒绝（HTTP {exc.response.status_code}）：{detail or exc}"
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise DownloaderPushError(f"连不上下载中心：{exc}") from exc
+        raise DownloaderPushError(f"下载中心拒绝（HTTP {resp.status_code}）：{detail or ''}")
+    return resp.json()

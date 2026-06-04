@@ -40,7 +40,7 @@ def test_push_batch_posts_payload(monkeypatch):
 
     monkeypatch.setattr(dp, "GATEWAY_URL", "http://gw:8011")
     monkeypatch.setattr(dp, "GATEWAY_TOKEN", "secret")
-    monkeypatch.setattr(dp.httpx, "post", fake_post)
+    monkeypatch.setattr(dp.cffi_requests, "post", fake_post)
 
     job = dp.push_batch("漫画A", "/mnt/hdd/x", [{"url": "u", "rel_path": "001.jpg"}],
                         callback_url="http://he/cb")
