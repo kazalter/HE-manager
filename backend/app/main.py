@@ -24,6 +24,7 @@ from . import (
     ai_config,
     creators as creators_mod,
     database,
+    downloader_push,
     external_sources,
     media_cleanup,
     manga_metadata,
@@ -3765,3 +3766,87 @@ def create_asmr_download_job(
     }
     background_tasks.add_task(run_asmr_download_job, job_id, payload.item_ids, download_root_path)
     return DOWNLOAD_JOBS[job_id]
+
+
+# ============================================================================
+# 推给独立下载中心（HE_downloader gateway）—— 方向 B，与上面的内置下载并存
+# ============================================================================
+# HE 仍负责解析（cookie / 签名 URL 在这边），把文件清单作为一个分组任务 POST
+# 给网关 /jobs/batch；文件落到库目录（dest_dir 走 /mnt/hdd/...），由下载中心的
+# aria2 下载、续传、统一面板展示。入库由后续的完成回调处理（暂未接）。
+
+def _push_external_items(payload, db, build):
+    """把选中收藏逐条解析成 (item_dir, files) 并 push_batch。build(item, source, root)
+    返回 (item_dir, [{url, rel_path, headers}])。"""
+    if not downloader_push.is_configured():
+        raise HTTPException(status_code=503, detail="未配置下载中心地址（HE_DOWNLOADER_URL）")
+    root_override = (payload.download_root_path or "").strip()
+    results = []
+    for item_id in payload.item_ids:
+        item = db.query(models.ExternalFavoriteItem).filter(models.ExternalFavoriteItem.id == item_id).first()
+        if not item:
+            results.append({"item_id": item_id, "status": "failed", "error": "条目不存在"})
+            continue
+        source = get_source_or_404(item.source_id, db)
+        root = root_override or source.download_root_path
+        if not root:
+            results.append({"item_id": item_id, "title": item.title, "status": "failed", "error": "未设置下载位置"})
+            continue
+        try:
+            item_dir, files = build(item, source, root)
+            if not files:
+                raise RuntimeError("没有可下载的文件")
+            job = downloader_push.push_batch(name=item.title, dest_dir=item_dir, files=files)
+            results.append({"item_id": item_id, "title": item.title, "status": "pushed",
+                            "job_id": job.get("id"), "files": len(files), "dest_dir": item_dir})
+        except Exception as exc:  # noqa: BLE001
+            results.append({"item_id": item_id, "title": item.title, "status": "failed", "error": str(exc)})
+    pushed = [r for r in results if r.get("status") == "pushed"]
+    if not pushed and results:
+        raise HTTPException(status_code=502, detail=results[0].get("error") or "推送失败")
+    return {"pushed": len(pushed), "results": results}
+
+
+@app.post("/external/asmr/push")
+def push_asmr_to_downloader(payload: schemas.ExternalDownloadRequest, db: Session = Depends(get_db)):
+    """把选中的 ASMR 收藏推给下载中心。ASMR 是签名 CDN 直链，aria2 直接可下。"""
+    def build(item, source, root):
+        if (source.source_type or "") != "asmr":
+            raise RuntimeError("不是 ASMR 条目")
+        plan = prepare_asmr_download_plan_for_item(item, source, root)
+        item_dir = plan["item_dir"]
+        files = []
+        for f in plan["files"]:
+            rel = os.path.relpath(f["local_path"], item_dir).replace(os.sep, "/")
+            files.append({
+                "url": f["url"],
+                "rel_path": rel,
+                "headers": {
+                    "User-Agent": "HE-Manager/1.0 local ASMR sync",
+                    "Referer": asmr_source.WEB_WORK_BASE + "/",
+                },
+            })
+        return item_dir, files
+
+    return _push_external_items(payload, db, build)
+
+
+@app.post("/external/wnacg/push")
+def push_wnacg_to_downloader(payload: schemas.ExternalDownloadRequest, db: Session = Depends(get_db)):
+    """把选中的 wnacg 收藏推给下载中心。⚠️ wnacg 在 Cloudflare 后、图片可能要浏览器
+    TLS 指纹，aria2 或被 403；走不通就继续用内置 /external/wnacg/downloads。"""
+    def build(item, source, root):
+        if (source.source_type or "wnacg") != "wnacg":
+            raise RuntimeError("不是 wnacg 条目")
+        plan = prepare_wnacg_download_plan(item, source, root)
+        item_dir = plan["item_dir"]
+        headers = {"Referer": item.url or source.favorites_url or ""}
+        if source.cookie:
+            headers["Cookie"] = source.cookie
+        files = [
+            {"url": url, "rel_path": f"{idx:03d}{downloader_push.url_ext(url)}", "headers": headers}
+            for idx, url in enumerate(plan["image_urls"], start=1)
+        ]
+        return item_dir, files
+
+    return _push_external_items(payload, db, build)
