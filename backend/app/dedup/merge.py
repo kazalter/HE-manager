@@ -57,7 +57,20 @@ def _merge_metadata(existing: models.Media, candidate: models.Media) -> None:
         existing.rating = candidate.rating
 
 
-def _drop_media_and_fingerprint(db: Session, media: models.Media) -> None:
+def _drop_media_and_fingerprint(
+    db: Session,
+    media: models.Media,
+    replacement: Optional[models.Media] = None,
+) -> None:
+    # X imports keep a back-reference from each downloaded file to its library row.
+    # When duplicate resolution removes a Media row, preserve that back-reference by
+    # moving it to the row that survives the merge.
+    db.query(models.XMediaItem).filter(
+        models.XMediaItem.library_media_id == media.id
+    ).update(
+        {models.XMediaItem.library_media_id: replacement.id if replacement else None},
+        synchronize_session=False,
+    )
     fp = (
         db.query(models.MediaFingerprint)
         .filter(models.MediaFingerprint.media_id == media.id)
@@ -79,6 +92,10 @@ def _drop_media_and_fingerprint(db: Session, media: models.Media) -> None:
             other.status = "merged"
             other.resolved_at = datetime.utcnow()
             other.resolution_note = "对端已被合并删除"
+        if other.existing_media_id == media.id:
+            other.existing_media_id = replacement.id if replacement else None
+        if other.candidate_media_id == media.id:
+            other.candidate_media_id = replacement.id if replacement else None
     db.delete(media)
 
 
@@ -122,7 +139,7 @@ def apply_action(
         existing.folder_id = candidate.folder_id
         existing.is_missing = False
         _merge_metadata(existing, candidate)
-        _drop_media_and_fingerprint(db, candidate)
+        _drop_media_and_fingerprint(db, candidate, replacement=existing)
         pair.status = "replaced"
         pair.resolved_at = now
         pair.resolution_note = note or f"路径替换：{old_path} → {existing.absolute_path}"
@@ -131,7 +148,7 @@ def apply_action(
 
     if action == ACTION_KEEP_EXISTING:
         _merge_metadata(existing, candidate)
-        _drop_media_and_fingerprint(db, candidate)
+        _drop_media_and_fingerprint(db, candidate, replacement=existing)
         pair.status = "merged"
         pair.resolved_at = now
         pair.resolution_note = note

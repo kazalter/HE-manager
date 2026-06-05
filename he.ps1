@@ -236,6 +236,67 @@ function Get-LanIp {
     } catch { return $null }
 }
 
+function Read-DotEnv($Path) {
+    $result = @{}
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $result
+    }
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed -match "^\s*([^=]+?)\s*=\s*(.*)\s*$") {
+            $key = $matches[1].Trim()
+            $value = $matches[2].Trim()
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            $result[$key] = $value
+        }
+    }
+    return $result
+}
+
+function Get-DotEnvValue($EnvMap, $Name, $Default = "") {
+    if ($EnvMap.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace([string]$EnvMap[$Name])) {
+        return [string]$EnvMap[$Name]
+    }
+    return $Default
+}
+
+function Configure-DownloaderBridge {
+    # Windows local dev: HE_downloader runs beside this repo without Docker.
+    # The gateway proxy uses HE_MANAGER_TOKEN to call HE; HE can reuse that
+    # same admin token as the callback query token.
+    $downloaderEnvPath = Join-Path (Split-Path -Parent $Root) "HE_downloader\.env"
+    $downloaderEnv = Read-DotEnv $downloaderEnvPath
+
+    $gatewayPort = Get-DotEnvValue $downloaderEnv "GATEWAY_PORT" "8011"
+    if (-not $env:HE_DOWNLOADER_URL) {
+        $env:HE_DOWNLOADER_URL = "http://127.0.0.1:$gatewayPort"
+    }
+
+    $gatewayToken = Get-DotEnvValue $downloaderEnv "GATEWAY_API_TOKEN" ""
+    if (-not $env:HE_DOWNLOADER_TOKEN -and $gatewayToken) {
+        $env:HE_DOWNLOADER_TOKEN = $gatewayToken
+    }
+
+    if (-not $env:HE_PUBLIC_URL) {
+        $env:HE_PUBLIC_URL = "http://127.0.0.1:$BackendPort"
+    }
+
+    $heToken = Get-DotEnvValue $downloaderEnv "HE_MANAGER_TOKEN" ""
+    if (-not $env:HE_CALLBACK_TOKEN -and $heToken) {
+        $env:HE_CALLBACK_TOKEN = $heToken
+    }
+
+    Write-Host "  downloader bridge: $($env:HE_DOWNLOADER_URL)" -ForegroundColor DarkGray
+    if ($env:HE_CALLBACK_TOKEN) {
+        Write-Host "  downloader callback: $($env:HE_PUBLIC_URL)/external/downloader/callback?token=***" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  downloader callback: disabled (missing HE_CALLBACK_TOKEN / HE_MANAGER_TOKEN)" -ForegroundColor Yellow
+    }
+}
+
 function Start-Child($FileName, $Arguments, $WorkDir, $Prefix, $Color, $LogPath) {
     Set-Content -LiteralPath $LogPath -Value "" -Encoding utf8
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -331,6 +392,9 @@ try {
         " --reload --reload-dir `"$BackendDir\app`" --reload-exclude `"*.db`""
     }
     $backendArgs = "-m uvicorn app.main:app --app-dir `"$BackendDir`" --host 0.0.0.0 --port $BackendPort --no-access-log" + $reloadArgs
+
+    Write-Banner "Configuring downloader bridge"
+    Configure-DownloaderBridge
 
     Write-Banner "Starting backend"
     $backend = Start-Child "python" $backendArgs $BackendDir "BE" "Cyan" $BackendLog

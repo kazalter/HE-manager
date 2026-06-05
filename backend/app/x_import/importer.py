@@ -228,6 +228,27 @@ def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Fold
 
         record = existing_media.get(media.media_index)
         if record and record.status == "downloaded" and record.local_path and os.path.exists(record.local_path):
+            if not (
+                record.library_media_id
+                and db.query(models.Media.id).filter(models.Media.id == record.library_media_id).first()
+            ):
+                try:
+                    file_size = record.file_size or os.path.getsize(record.local_path)
+                    library_media = (
+                        db.query(models.Media)
+                        .filter(models.Media.absolute_path == record.local_path)
+                        .first()
+                    )
+                    if not library_media:
+                        library_media = storage.upsert_library_media(
+                            record, post, folder, record.local_path, file_size, job.thumbnail_dir, db
+                        )
+                    record.library_media_id = library_media.id
+                    record.file_size = file_size
+                    db.commit()
+                except Exception as exc:
+                    job.log_error(post.tweet_id, f"已下载媒体补入库失败：{exc}")
+                    any_failed = True
             media_records.append(record)
             job.media_downloaded += 1
             continue

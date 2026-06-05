@@ -14,7 +14,7 @@ import {
   Square,
   X,
 } from 'lucide-vue-next'
-import { API_BASE_URL } from '../../config'
+import { API_BASE_URL, authUrl } from '../../config'
 import type { ExternalFavoriteItem, ExternalFavoriteSource, Media } from '../../types'
 import MediaDetail from '../MediaDetail.vue'
 import ThemeSelect from '../ThemeSelect.vue'
@@ -169,7 +169,7 @@ const statusText = computed(() => {
 })
 
 const formatTime = (value: string | null) => (value ? new Date(value).toLocaleString() : '-')
-const coverSrc = (item: ExternalFavoriteItem) => `${API_BASE_URL}/external/favorites/${item.id}/cover`
+const coverSrc = (item: ExternalFavoriteItem) => authUrl(`${API_BASE_URL}/external/favorites/${item.id}/cover`)
 
 const goToPage = (page: number) => {
   currentPage.value = Math.min(Math.max(page, 1), totalPages.value)

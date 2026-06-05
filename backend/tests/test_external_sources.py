@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import external_sources, models
+from app import external_sources, main as app_main, models, schemas
 
 
 class ExternalSourcesTest(unittest.TestCase):
@@ -120,6 +121,136 @@ class ExternalSourcesTest(unittest.TestCase):
             self.assertEqual(saved.items[0].sync_position, 3)
         finally:
             db.close()
+
+    def test_wnacg_sync_stops_category_after_existing_item(self):
+        db = self.Session()
+        try:
+            source = models.ExternalFavoriteSource(
+                source_type="wnacg",
+                name="WNACG",
+                favorites_url=external_sources.WNACG_DEFAULT_URL,
+                cookie="session=test",
+            )
+            source.items.append(
+                models.ExternalFavoriteItem(
+                    source_type="wnacg",
+                    external_id="1003",
+                    title="Already saved",
+                    url="https://www.wnacg.com/photos-index-aid-1003.html",
+                )
+            )
+            db.add(source)
+            db.commit()
+            db.refresh(source)
+
+            calls = []
+
+            def fake_fetch_html(url, cookie):
+                calls.append(url)
+                if url == external_sources.WNACG_DEFAULT_URL:
+                    return '<a href="/users-users_fav-c-7.html">默认</a>'
+                if "page-1-c-7" in url:
+                    return """
+                    <a href="/photos-index-aid-1001.html">New 1</a>
+                    <a href="/photos-index-aid-1002.html">New 2</a>
+                    <a>下一页</a>
+                    """
+                if "page-2-c-7" in url:
+                    return """
+                    <a href="/photos-index-aid-1003.html">Already saved</a>
+                    <a>下一页</a>
+                    """
+                raise AssertionError(f"unexpected fetch: {url}")
+
+            with patch.object(external_sources, "fetch_html", fake_fetch_html):
+                result = app_main.sync_wnacg_favorites(
+                    schemas.ExternalFavoriteSyncRequest(
+                        source_id=source.id,
+                        favorites_url=external_sources.WNACG_DEFAULT_URL,
+                        page_limit=30,
+                    ),
+                    db=db,
+                )
+
+            self.assertEqual(result["synced_count"], 3)
+            self.assertTrue(any("page-1-c-7" in url for url in calls))
+            self.assertTrue(any("page-2-c-7" in url for url in calls))
+            self.assertFalse(any("page-3-c-7" in url for url in calls))
+        finally:
+            db.close()
+
+    def test_request_retries_network_error_on_same_impersonation(self):
+        calls = []
+
+        class Response:
+            status_code = 200
+            headers = {}
+            content = b"ok"
+
+        def fake_request(method, url, headers, timeout, impersonate, proxies):
+            calls.append(impersonate)
+            if len(calls) == 1:
+                raise RuntimeError("temporary timeout")
+            return Response()
+
+        with (
+            patch.object(external_sources.cffi_requests, "request", fake_request),
+            patch.object(external_sources, "_proxies", lambda: None),
+            patch.object(external_sources.time, "sleep", lambda _: None),
+        ):
+            response = external_sources._request(
+                "https://www.wnacg.com/",
+                cookie="",
+                accept="text/html",
+                referer=external_sources.WNACG_BASE_URL,
+                timeout=1,
+                retries=2,
+            )
+
+        self.assertEqual(response.content, b"ok")
+        self.assertEqual(calls, ["chrome", "chrome"])
+
+    def test_request_raises_on_non_retryable_http_status(self):
+        class Response:
+            status_code = 404
+            headers = {}
+            content = b"not found"
+
+        with (
+            patch.object(external_sources.cffi_requests, "request", lambda *a, **k: Response()),
+            patch.object(external_sources, "_proxies", lambda: None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+                external_sources._request(
+                    "https://www.wnacg.com/missing",
+                    cookie="",
+                    accept="text/html",
+                    referer=external_sources.WNACG_BASE_URL,
+                    timeout=1,
+                    retries=1,
+                )
+
+    def test_request_can_return_non_200_when_status_check_disabled(self):
+        class Response:
+            status_code = 404
+            headers = {}
+            content = b"not found"
+
+        with (
+            patch.object(external_sources.cffi_requests, "request", lambda *a, **k: Response()),
+            patch.object(external_sources, "_proxies", lambda: None),
+        ):
+            response = external_sources._request(
+                "https://www.wnacg.com/missing",
+                cookie="",
+                accept="text/html",
+                referer=external_sources.WNACG_BASE_URL,
+                timeout=1,
+                retries=1,
+                raise_on_status=False,
+            )
+
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":

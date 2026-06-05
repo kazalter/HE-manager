@@ -236,7 +236,7 @@ class ExternalFavoriteSyncRequest(BaseModel):
     name: str = "WNACG"
     favorites_url: str = "https://www.wnacg.com/users-users_fav.html"
     cookie: Optional[str] = None
-    page_limit: int = Field(default=3, ge=1, le=30)
+    page_limit: int = Field(default=30, ge=1, le=30)
     category_id: Optional[str] = None
     download_root_path: Optional[str] = None
 

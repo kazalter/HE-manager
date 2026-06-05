@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app import media_cleanup, models, scanner
+from app.dedup import merge as dedup_merge
 
 
 class MediaCoreTest(unittest.TestCase):
@@ -75,6 +76,8 @@ class MediaCoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Image.new("RGB", (10, 10)).save(os.path.join(tmp, "001.jpg"))
             Image.new("RGB", (10, 10)).save(os.path.join(tmp, "002.png"))
+            os.makedirs(os.path.join(tmp, ".he_cover"))
+            Image.new("RGB", (10, 10)).save(os.path.join(tmp, ".he_cover", "cover.jpg"))
             with open(os.path.join(tmp, "notes.txt"), "w", encoding="utf-8") as f:
                 f.write("not a page")
 
@@ -184,6 +187,56 @@ class MediaCoreTest(unittest.TestCase):
             self.assertEqual(db.query(models.Media).count(), 0)
             self.assertIsNone(db.query(models.XMediaItem).one().library_media_id)
             self.assertEqual(db.query(models.DuplicateCandidate).count(), 0)
+        finally:
+            db.close()
+
+    def test_dedup_merge_transfers_x_media_reference_to_surviving_media(self):
+        db = self.Session()
+        try:
+            folder = models.Folder(path="D:\\Imported", scan_mode="image")
+            existing = models.Media(
+                folder=folder,
+                title="keep.jpg",
+                relative_path="keep.jpg",
+                absolute_path="D:\\Imported\\keep.jpg",
+                media_type="image",
+                extension=".jpg",
+                file_size=100,
+            )
+            candidate = models.Media(
+                folder=folder,
+                title="candidate.jpg",
+                relative_path="candidate.jpg",
+                absolute_path="D:\\Imported\\candidate.jpg",
+                media_type="image",
+                extension=".jpg",
+                file_size=100,
+            )
+            source = models.XImportSource(name="X")
+            post = models.XPost(source=source, tweet_id="1", url="https://x.test/1")
+            x_item = models.XMediaItem(
+                post=post,
+                media_index=0,
+                media_type="photo",
+                remote_url="https://x.test/candidate.jpg",
+                status="downloaded",
+            )
+            db.add_all([folder, source, existing, candidate, x_item])
+            db.flush()
+            x_item.library_media_id = candidate.id
+            pair = models.DuplicateCandidate(
+                existing_media_id=existing.id,
+                candidate_media_id=candidate.id,
+                level="suspected_duplicate",
+                similarity=90,
+            )
+            db.add(pair)
+            db.commit()
+
+            dedup_merge.apply_action(db, pair, dedup_merge.ACTION_KEEP_EXISTING)
+
+            self.assertEqual(db.query(models.Media).count(), 1)
+            self.assertEqual(db.query(models.XMediaItem).one().library_media_id, existing.id)
         finally:
             db.close()
 

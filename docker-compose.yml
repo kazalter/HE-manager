@@ -24,6 +24,15 @@ services:
       HE_ENABLE_DOCS: "0"           # keep /docs /redoc /openapi.json closed on the public net
       # HE_ALLOWED_ORIGINS: "https://<your-sakura-subdomain>"  # only if you ever expose the web UI
       HE_DATABASE_URL: "sqlite:////data/library.db"
+      # --- optional HE_downloader bridge ---
+      # HE_DOWNLOADER_URL: "http://192.168.208.130:8011"
+      # HE_DOWNLOADER_TOKEN: ""
+      # HE_PUBLIC_URL: "http://192.168.208.130:8010"  # reachable from the downloader container
+      # HE_CALLBACK_TOKEN: ""                         # admin access token; used as ?token= on callback URL
+      # --- optional WNACG network tuning ---
+      # HE_WNACG_FETCH_TIMEOUT_SECONDS: "45"
+      # HE_WNACG_FETCH_RETRIES: "3"
+      # HE_WNACG_FETCH_RETRY_BACKOFF_SECONDS: "1.5"
     volumes:
       # SQLite DB (+ its -wal/-shm). Back up THIS dir; it is the whole library
       # metadata (tags, favourites, download state, …). Never baked into image.

@@ -9,7 +9,7 @@ import time
 import uuid
 import zipfile
 from typing import List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -452,6 +452,8 @@ LOGIN_MAX_FAILURES_PER_USER = int(os.getenv("HE_LOGIN_MAX_FAILURES_PER_USER", "1
 # to escape the throttle — under a raw FRP tunnel every request then shares the
 # frpc loopback peer, which is exactly the conservative behaviour we want.
 _TRUST_FORWARDED_FOR = os.getenv("HE_TRUST_FORWARDED_FOR", "").lower() in {"1", "true", "yes", "on"}
+HE_PUBLIC_URL = os.getenv("HE_PUBLIC_URL", "").strip().rstrip("/")
+HE_CALLBACK_TOKEN = os.getenv("HE_CALLBACK_TOKEN", "").strip()
 
 PUBLIC_PATHS = {
     "/auth/status",
@@ -555,6 +557,26 @@ def get_cover_extension(content_type: str, url: str) -> str:
     return parsed_ext if parsed_ext in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"} else ".img"
 
 
+def external_cover_sidecar_rel_path(item: models.ExternalFavoriteItem) -> Optional[str]:
+    cover_url = (item.cover_url or "").strip()
+    if not cover_url:
+        return None
+    if (item.source_type or "") == "asmr":
+        ext = downloader_push.url_ext(cover_url, ".jpg")
+        return f"cover{ext}"
+    return None
+
+
+def find_external_cover_sidecar(item_dir: str) -> Optional[str]:
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".avif"}
+    candidates = glob.glob(os.path.join(item_dir, "cover.*"))
+    candidates += glob.glob(os.path.join(item_dir, ".he_cover", "cover.*"))
+    for path in sorted(candidates):
+        if os.path.splitext(path)[1].lower() in image_exts and os.path.isfile(path):
+            return path
+    return None
+
+
 def ensure_asmr_cover_file(item: models.ExternalFavoriteItem, item_dir: str) -> Optional[str]:
     """Ensure item_dir has a sidecar cover.* image, downloading from
     item.cover_url when missing. Idempotent (returns the existing path if one
@@ -601,6 +623,36 @@ def get_cover_cache_prefix(item: models.ExternalFavoriteItem) -> str:
 def find_cached_cover(covers_dir: str, item: models.ExternalFavoriteItem) -> Optional[str]:
     matches = glob.glob(os.path.join(covers_dir, f"{get_cover_cache_prefix(item)}.*"))
     return matches[0] if matches else None
+
+
+def ensure_external_cover_cache(item: models.ExternalFavoriteItem, source: models.ExternalFavoriteSource) -> Optional[str]:
+    if not (item.cover_url or "").strip():
+        return None
+    _, covers_dir, _ = get_external_storage_dirs(source)
+    cached_cover = find_cached_cover(covers_dir, item)
+    if cached_cover and os.path.exists(cached_cover):
+        return cached_cover
+    try:
+        if (source.source_type or "") == "asmr":
+            content, content_type = asmr_source.fetch_file(item.cover_url)
+        else:
+            content, content_type = external_sources.fetch_binary(
+                item.cover_url,
+                source.cookie or "",
+                referer=item.url or source.favorites_url,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! Failed to cache external cover for {item.title!r}: {exc}")
+        return None
+    extension = get_cover_extension(content_type, item.cover_url)
+    cover_path = os.path.join(covers_dir, f"{get_cover_cache_prefix(item)}{extension}")
+    try:
+        with open(cover_path, "wb") as cover_file:
+            cover_file.write(content)
+    except OSError as exc:
+        print(f"  ! Failed to write external cover cache for {item.title!r}: {exc}")
+        return None
+    return cover_path
 
 
 def safe_filename(value: str, fallback: str = "item") -> str:
@@ -772,6 +824,16 @@ def wnacg_download_is_complete(item_dir: str) -> bool:
     return os.path.isfile(os.path.join(item_dir, "source.txt"))
 
 
+def ensure_wnacg_source_marker(item: models.ExternalFavoriteItem, item_dir: str) -> None:
+    if not item_dir or not os.path.isdir(item_dir):
+        return
+    info_path = os.path.join(item_dir, "source.txt")
+    if os.path.exists(info_path):
+        return
+    with open(info_path, "w", encoding="utf-8") as info_file:
+        info_file.write(f"{item.title}\n{item.url}\n")
+
+
 def find_local_media_for_external_item(item: models.ExternalFavoriteItem, db: Session) -> Optional[models.Media]:
     # WNACG works are manga; ASMR works are audio. The expected media_type is
     # the only branch difference — everything else (source_url/source_site
@@ -917,7 +979,11 @@ def upsert_external_downloaded_media(
         thumb_hash = hashlib.md5(item_dir.encode("utf-8")).hexdigest()[:12]
         thumb_name = f"thumb_ext_{thumb_hash}_{datetime.now().timestamp()}.jpg"
         thumb_path = os.path.join(THUMBNAIL_DIR, thumb_name)
-        if scanner.get_folder_thumbnail(item_dir, thumb_path):
+        cover_src = ensure_external_cover_cache(item, source)
+        if cover_src and scanner.make_work_thumbnail(cover_src, thumb_path):
+            media.cover_path = thumb_name
+            media.cover_source = "external_cover"
+        elif scanner.get_folder_thumbnail(item_dir, thumb_path):
             media.cover_path = thumb_name
 
     folder.last_scanned_at = datetime.now()
@@ -2350,6 +2416,11 @@ def sync_wnacg_favorites(payload: schemas.ExternalFavoriteSyncRequest, db: Sessi
     db.commit()
 
     try:
+        existing_items = {
+            item.external_id: item
+            for item in db.query(models.ExternalFavoriteItem).filter(models.ExternalFavoriteItem.source_id == source.id).all()
+        }
+        existing_external_ids = set(existing_items.keys())
         base_url = get_url_base(source.favorites_url)
         first_html = external_sources.fetch_html(source.favorites_url, cookie)
         categories = external_sources.parse_wnacg_categories(first_html)
@@ -2365,24 +2436,21 @@ def sync_wnacg_favorites(payload: schemas.ExternalFavoriteSyncRequest, db: Sessi
                 for page in range(1, payload.page_limit + 1):
                     page_url = external_sources.wnacg_category_url(category.id, page, base_url=base_url)
                     page_html = external_sources.fetch_html(page_url, cookie)
-                    parsed_items.extend(
-                        external_sources.parse_wnacg_favorites(
-                            page_html,
-                            base_url=base_url,
-                            category_id=category.id,
-                            category_name=category.name,
-                        )
+                    page_items = external_sources.parse_wnacg_favorites(
+                        page_html,
+                        base_url=base_url,
+                        category_id=category.id,
+                        category_name=category.name,
                     )
+                    parsed_items.extend(page_items)
+                    if any(item.external_id in existing_external_ids for item in page_items):
+                        break
                     if not external_sources.html_has_next_page(page_html):
                         break
         else:
             parsed_items = external_sources.parse_wnacg_favorites(first_html, base_url=base_url)
 
         now = datetime.utcnow()
-        existing_items = {
-            item.external_id: item
-            for item in db.query(models.ExternalFavoriteItem).filter(models.ExternalFavoriteItem.source_id == source.id).all()
-        }
         for db_item in existing_items.values():
             db_item.sync_position = None
 
@@ -2451,21 +2519,10 @@ def get_external_favorite_cover(favorite_id: int, db: Session = Depends(get_db))
 
     source = get_source_or_404(item.source_id, db)
     try:
-        _, covers_dir, _ = get_external_storage_dirs(source)
-        cached_cover = find_cached_cover(covers_dir, item)
+        cached_cover = ensure_external_cover_cache(item, source)
         if cached_cover and os.path.exists(cached_cover):
             return FileResponse(cached_cover)
-
-        content, content_type = external_sources.fetch_binary(
-            item.cover_url,
-            source.cookie or "",
-            referer=item.url or source.favorites_url,
-        )
-        extension = get_cover_extension(content_type, item.cover_url)
-        cover_path = os.path.join(covers_dir, f"{get_cover_cache_prefix(item)}{extension}")
-        with open(cover_path, "wb") as cover_file:
-            cover_file.write(content)
-        return FileResponse(cover_path, media_type=content_type)
+        raise RuntimeError("封面缓存失败")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"读取外部封面失败：{exc}")
 
@@ -3773,7 +3830,27 @@ def create_asmr_download_job(
 # ============================================================================
 # HE 仍负责解析（cookie / 签名 URL 在这边），把文件清单作为一个分组任务 POST
 # 给网关 /jobs/batch；文件落到库目录（dest_dir 走 /mnt/hdd/...），由下载中心的
-# aria2 下载、续传、统一面板展示。入库由后续的完成回调处理（暂未接）。
+# aria2 下载、续传、统一面板展示。下载中心完成后回调 HE，再复用内置下载的 upsert 入库逻辑。
+
+def _external_downloader_callback_url(item_id: int, source_type: str) -> Optional[str]:
+    if not HE_PUBLIC_URL or not HE_CALLBACK_TOKEN:
+        return None
+    query = urlencode({
+        "item_id": item_id,
+        "source_type": source_type or "wnacg",
+        "token": HE_CALLBACK_TOKEN,
+    })
+    return f"{HE_PUBLIC_URL}/external/downloader/callback?{query}"
+
+
+def _download_root_from_item_dir(item_dir: str, source: models.ExternalFavoriteSource) -> Optional[str]:
+    if not item_dir:
+        return source.download_root_path
+    expected_bucket = "audio" if (source.source_type or "") == "asmr" else "manga"
+    parent = os.path.dirname(os.path.abspath(item_dir))
+    if os.path.basename(parent).lower() == expected_bucket:
+        return os.path.dirname(parent)
+    return source.download_root_path
 
 def _push_external_items(payload, db, build):
     """把选中收藏逐条解析成 (item_dir, files) 并 push_batch。build(item, source, root)
@@ -3796,7 +3873,13 @@ def _push_external_items(payload, db, build):
             item_dir, files = build(item, source, root)
             if not files:
                 raise RuntimeError("没有可下载的文件")
-            job = downloader_push.push_batch(name=item.title, dest_dir=item_dir, files=files)
+            callback_url = _external_downloader_callback_url(item.id, source.source_type or "wnacg")
+            job = downloader_push.push_batch(
+                name=item.title,
+                dest_dir=item_dir,
+                files=files,
+                callback_url=callback_url,
+            )
             results.append({"item_id": item_id, "title": item.title, "status": "pushed",
                             "job_id": job.get("id"), "files": len(files), "dest_dir": item_dir})
         except Exception as exc:  # noqa: BLE001
@@ -3805,6 +3888,53 @@ def _push_external_items(payload, db, build):
     if not pushed and results:
         raise HTTPException(status_code=502, detail=results[0].get("error") or "推送失败")
     return {"pushed": len(pushed), "results": results}
+
+
+@app.post("/external/downloader/callback")
+def downloader_callback(payload: dict, item_id: int, source_type: str = "wnacg", db: Session = Depends(get_db)):
+    event = (payload or {}).get("event")
+    if event != "complete":
+        return {"ok": True, "skipped": event}
+
+    item = db.query(models.ExternalFavoriteItem).filter(models.ExternalFavoriteItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="条目不存在")
+
+    source = get_source_or_404(item.source_id, db)
+    job = (payload or {}).get("job") or {}
+    item_dir = job.get("dir") or external_item_download_dir(item, source)
+    download_root_path = _download_root_from_item_dir(item_dir, source)
+    if not download_root_path:
+        raise HTTPException(status_code=400, detail="未设置下载位置")
+
+    if (source.source_type or source_type or "") == "asmr":
+        files = job.get("files") or []
+        track_count = sum(
+            1
+            for file_info in files
+            if os.path.splitext((file_info or {}).get("rel_path") or (file_info or {}).get("name") or "")[1].lower()
+            in AUDIO_TRACK_EXTS
+        )
+        if track_count <= 0:
+            track_count = len(scan_audio_tracks(item_dir)) if os.path.isdir(item_dir) else len(files)
+        total_bytes = int(job.get("total_bytes") or job.get("completed_bytes") or 0)
+        if total_bytes <= 0 and os.path.isdir(item_dir):
+            total_bytes = scanner.directory_size(item_dir)
+        local_media = upsert_external_downloaded_audio_media(
+            item,
+            source,
+            item_dir,
+            download_root_path,
+            db,
+            track_count=track_count,
+            total_bytes=total_bytes,
+        )
+    else:
+        ensure_wnacg_source_marker(item, item_dir)
+        local_media = upsert_external_downloaded_media(item, source, item_dir, download_root_path, db)
+
+    db.commit()
+    return {"ok": True, "item_id": item_id, "local_media_id": local_media.id}
 
 
 @app.post("/external/asmr/push")
@@ -3826,6 +3956,17 @@ def push_asmr_to_downloader(payload: schemas.ExternalDownloadRequest, db: Sessio
                     "Referer": asmr_source.WEB_WORK_BASE + "/",
                 },
             })
+        cover_rel = external_cover_sidecar_rel_path(item)
+        if cover_rel:
+            files.append({
+                "url": item.cover_url,
+                "rel_path": cover_rel,
+                "optional": True,
+                "headers": {
+                    "User-Agent": "HE-Manager/1.0 local ASMR sync",
+                    "Referer": asmr_source.WEB_WORK_BASE + "/",
+                },
+            })
         return item_dir, files
 
     return _push_external_items(payload, db, build)
@@ -3840,13 +3981,27 @@ def push_wnacg_to_downloader(payload: schemas.ExternalDownloadRequest, db: Sessi
             raise RuntimeError("不是 wnacg 条目")
         plan = prepare_wnacg_download_plan(item, source, root)
         item_dir = plan["item_dir"]
-        headers = {"Referer": item.url or source.favorites_url or ""}
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": item.url or source.favorites_url or "",
+        }
         if source.cookie:
             headers["Cookie"] = source.cookie
         files = [
             {"url": url, "rel_path": f"{idx:03d}{downloader_push.url_ext(url)}", "headers": headers}
             for idx, url in enumerate(plan["image_urls"], start=1)
         ]
+        cover_rel = external_cover_sidecar_rel_path(item)
+        if cover_rel:
+            cover_headers = dict(headers)
+            cover_headers["Referer"] = source.favorites_url or item.url or ""
+            files.append({"url": item.cover_url, "rel_path": cover_rel, "headers": cover_headers, "optional": True})
         return item_dir, files
 
     return _push_external_items(payload, db, build)

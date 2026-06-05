@@ -15,7 +15,7 @@ import {
   Square,
   X,
 } from 'lucide-vue-next'
-import { API_BASE_URL } from '../../config'
+import { API_BASE_URL, authUrl } from '../../config'
 import type { ExternalFavoriteItem, ExternalFavoriteSource, Media } from '../../types'
 import MediaDetail from '../MediaDetail.vue'
 import ExternalDownloadProgress from '../ExternalDownloadProgress.vue'
@@ -24,7 +24,7 @@ import { externalDownloadStore } from '../../stores/externalDownloadStore'
 const favoritesUrl = ref('https://www.wnacg.com/users-users_fav.html')
 const downloadRootPath = ref('')
 const cookie = ref('')
-const pageLimit = ref(3)
+const pageLimit = ref(30)
 const searchQuery = ref('')
 const loading = ref(false)
 const syncing = ref(false)
@@ -87,7 +87,7 @@ const formatTime = (value: string | null) => {
 }
 
 const coverSrc = (item: ExternalFavoriteItem) => {
-  return `${API_BASE_URL}/external/favorites/${item.id}/cover`
+  return authUrl(`${API_BASE_URL}/external/favorites/${item.id}/cover`)
 }
 
 const fetchLocalMangaList = async () => {

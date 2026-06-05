@@ -24,7 +24,7 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.avif'}
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus'}
 
 # Folders to skip (case-insensitive)
-SKIP_FOLDERS = {'mask', 'result', 'inpainted', '.thumbnails', 'node_modules', '.git', '.vite'}
+SKIP_FOLDERS = {'mask', 'result', 'inpainted', '.thumbnails', '.he_cover', 'node_modules', '.git', '.vite'}
 
 # Global lock for video thumbnail generation to limit concurrency to 1
 THUMBNAIL_LOCK = threading.Lock()
@@ -39,7 +39,8 @@ def directory_size(root: str) -> int:
     error during scan doesn't tank a whole batch.
     """
     total = 0
-    for dirpath, _, files in os.walk(root):
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d.lower() not in SKIP_FOLDERS]
         for name in files:
             try:
                 total += os.path.getsize(os.path.join(dirpath, name))
@@ -175,7 +176,8 @@ def count_manga_pages(manga_path, extension):
     try:
         if extension == ".dir":
             count = 0
-            for _, _, files in os.walk(manga_path):
+            for _, dirs, files in os.walk(manga_path):
+                dirs[:] = [d for d in dirs if d.lower() not in SKIP_FOLDERS]
                 count += sum(1 for file in files if any(file.lower().endswith(ext) for ext in image_exts))
             return count
         with zipfile.ZipFile(manga_path, 'r') as z:

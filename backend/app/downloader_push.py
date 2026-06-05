@@ -47,7 +47,7 @@ def push_batch(
     callback_url: Optional[str] = None,
     timeout: float = 30.0,
 ) -> dict:
-    """提交一个分组任务，返回网关的 JobView（含 job id）。files: [{url, rel_path, headers?}]。"""
+    """提交一个分组任务，返回网关的 JobView（含 job id）。files: [{url, rel_path, headers?, optional?}]。"""
     if not GATEWAY_URL:
         raise DownloaderPushError("未配置下载中心地址（HE_DOWNLOADER_URL）")
     if not files:

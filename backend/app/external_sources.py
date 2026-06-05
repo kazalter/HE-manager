@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+import os
 import re
+import time
 from typing import Dict, Iterable, List, Optional
 from urllib.parse import urljoin
 from urllib.request import getproxies
@@ -22,7 +24,10 @@ WNACG_BASE_URL = "https://www.wnacg.com/"
 # proxy/TUN paths reject a given curl-impersonate handshake with
 # `TLS connect error: invalid library`, and the profile that works varies.
 _IMPERSONATIONS = ("chrome", "chrome124", "edge101", "firefox147")
-_FETCH_RETRIES = 3
+_FETCH_RETRIES = int(os.getenv("HE_WNACG_FETCH_RETRIES", "3"))
+_FETCH_TIMEOUT_SECONDS = int(os.getenv("HE_WNACG_FETCH_TIMEOUT_SECONDS", "45"))
+_FETCH_RETRY_BACKOFF_SECONDS = float(os.getenv("HE_WNACG_FETCH_RETRY_BACKOFF_SECONDS", "1.5"))
+_RETRYABLE_HTTP_STATUSES = (403, 429, 500, 502, 503, 520, 521, 522, 523, 524)
 
 
 def _proxies() -> Optional[dict]:
@@ -65,7 +70,7 @@ def _request(
     # Outer loop swaps the impersonation profile (handshake-level fallback);
     # inner loop retries transient Cloudflare 403/429/5xx and network resets.
     for impersonate in _IMPERSONATIONS:
-        for _ in range(max(1, retries)):
+        for attempt in range(max(1, retries)):
             try:
                 response = cffi_requests.request(
                     method,
@@ -77,17 +82,31 @@ def _request(
                 )
             except Exception as exc:  # network reset / TLS abort -> retry
                 last_exc = exc
-                break  # bad handshake for this profile; try the next one
+                if attempt + 1 < max(1, retries):
+                    time.sleep(_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                break  # bad handshake or consistently bad path for this profile; try the next one
             if response.status_code == 200 or not raise_on_status:
                 return response
             last_status = response.status_code
-            if response.status_code not in (403, 429, 500, 502, 503, 520, 521, 522, 523, 524):
-                return response
+            if response.status_code not in _RETRYABLE_HTTP_STATUSES:
+                raise RuntimeError(
+                    f"请求 wnacg 失败（HTTP {response.status_code}）；"
+                    "请检查 Cookie 是否过期、收藏页地址是否有效"
+                )
+            if attempt + 1 < max(1, retries):
+                time.sleep(_FETCH_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
     if last_status is not None:
-        raise RuntimeError(f"请求被 Cloudflare 拦截（HTTP {last_status}），多种指纹重试仍失败")
+        if last_status in (403, 429):
+            raise RuntimeError(f"请求被 Cloudflare 拦截（HTTP {last_status}），多种指纹重试仍失败")
+        raise RuntimeError(f"请求 wnacg 失败（HTTP {last_status}），多次重试仍失败")
     if last_exc is not None:
-        raise last_exc
+        raise RuntimeError(
+            "连接 wnacg 超时或被网络中断；请确认代理/TUN 可访问 www.wnacg.com，"
+            "或稍后重试。若经常发生，可调大 HE_WNACG_FETCH_TIMEOUT_SECONDS。"
+            f" 原始错误：{last_exc}"
+        ) from last_exc
     raise RuntimeError("请求失败：无法建立到 wnacg 的连接")
 
 
@@ -255,13 +274,13 @@ def html_has_next_page(html: str) -> bool:
     return ">後頁" in html or ">后页" in html or ">下一页" in html
 
 
-def fetch_html(url: str, cookie: str, timeout: int = 20) -> str:
+def fetch_html(url: str, cookie: str, timeout: Optional[int] = None) -> str:
     response = _request(
         url,
         cookie=cookie,
         accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         referer=WNACG_BASE_URL,
-        timeout=timeout,
+        timeout=timeout or _FETCH_TIMEOUT_SECONDS,
     )
     raw = response.content
     content_type = response.headers.get("Content-Type", "")
@@ -270,13 +289,13 @@ def fetch_html(url: str, cookie: str, timeout: int = 20) -> str:
     return raw.decode(encoding, errors="replace")
 
 
-def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: int = 20) -> tuple[bytes, str]:
+def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: Optional[int] = None) -> tuple[bytes, str]:
     response = _request(
         url,
         cookie=cookie,
         accept="image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         referer=referer,
-        timeout=timeout,
+        timeout=timeout or _FETCH_TIMEOUT_SECONDS,
     )
     return response.content, response.headers.get("Content-Type", "application/octet-stream")
 
