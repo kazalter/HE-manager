@@ -203,9 +203,18 @@ function Stop-StrayBackends {
     # uvicorn started OUTSIDE he.ps1 (old run_server.bat, a crashed prior run
     # that rebound the port, a second copy on another interface) keeps serving
     # STALE code, so newly added routes 404 as {"detail":"Not Found"}. Kill
-    # any leftover backend by command line, regardless of port.
+    # only HE Manager leftovers by command line; HE_downloader's gateway also
+    # runs "uvicorn app.main:app" on 8011 and must not be swept up here.
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*uvicorn app.main:app*" } |
+        Where-Object {
+            $cmd = [string]$_.CommandLine
+            if ($cmd -notlike "*uvicorn app.main:app*") { return $false }
+            return (
+                $cmd -like "*$BackendDir*" -or
+                $cmd -like "*$Root*" -or
+                $cmd -match "--port\s+$BackendPort(\s|$)"
+            )
+        } |
         ForEach-Object {
             Write-Host "  killing stray backend PID $($_.ProcessId)" -ForegroundColor DarkGray
             Stop-ProcessGracefully $_.ProcessId
