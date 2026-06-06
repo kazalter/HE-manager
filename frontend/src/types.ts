@@ -78,6 +78,21 @@ export interface Tag {
     count: number;
 }
 
+export interface Bd2SpineAsset {
+    id: string;
+    title: string;
+    skeleton: string;
+    atlas: string;
+    textures: string[];
+    skeleton_url: string;
+    atlas_url: string;
+}
+
+export interface Bd2SpineListResponse {
+    root: string;
+    assets: Bd2SpineAsset[];
+}
+
 export interface MangaRecommendationItem {
     media: Media;
     reason: string;

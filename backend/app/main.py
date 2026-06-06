@@ -1,6 +1,7 @@
 from datetime import datetime
 import glob
 import hashlib
+import json
 import mimetypes
 import os
 import re
@@ -112,6 +113,114 @@ def get_ranged_file_response(request: Request, file_path: str):
 
 AUDIO_TRACK_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
 LYRIC_EXTS = (".lrc", ".vtt", ".srt")
+
+
+# ============================================================================
+# Brown Dust 2 Spine preview endpoints
+# ============================================================================
+# The BD2 importer stores the asset checkout as Folder.scan_mode='bd2_asset'.
+# These endpoints expose a small, path-guarded Spine asset browser for the web
+# prototype. BD2 uses Spine (.skel/.atlas/.png), not Live2D Cubism.
+
+BD2_CHARINFO_FILENAME = "CharInfo(Dropped).json"
+
+
+def _bd2_asset_root(db: Session) -> str:
+    configured = (os.getenv("HE_BD2_ASSET_ROOT") or "").strip()
+    candidates = []
+    if configured:
+        candidates.append(configured)
+
+    folders = (
+        db.query(models.Folder)
+        .filter(models.Folder.scan_mode == "bd2_asset")
+        .order_by(models.Folder.id.desc())
+        .all()
+    )
+    candidates.extend(folder.path for folder in folders if folder.path)
+
+    media_rows = (
+        db.query(models.Media.absolute_path)
+        .filter(models.Media.source_site == "bd2")
+        .order_by(models.Media.id.desc())
+        .limit(20)
+        .all()
+    )
+    for (path,) in media_rows:
+        current = os.path.abspath(path or "")
+        for _ in range(8):
+            if not current:
+                break
+            candidates.append(current)
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+
+    for raw in candidates:
+        root = os.path.abspath(raw)
+        if os.path.isdir(root) and (
+            os.path.isdir(os.path.join(root, "spine"))
+            or os.path.exists(os.path.join(root, BD2_CHARINFO_FILENAME))
+        ):
+            return root
+    raise HTTPException(status_code=404, detail="BD2 asset root not found")
+
+
+def _bd2_char_info(root: str) -> dict[str, dict[str, str]]:
+    path = os.path.join(root, BD2_CHARINFO_FILENAME)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
+            text = file.read()
+        # Upstream currently has one malformed object missing a comma before
+        # "cutscene"; repair that known typo so names still resolve.
+        text = re.sub(
+            r'("censored_spine"\s*:\s*"[^"]+")\s*("cutscene"\s*:)',
+            r"\1,\n        \2",
+            text,
+        )
+        rows = json.loads(text)
+    except Exception:
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    for char in rows if isinstance(rows, list) else []:
+        char_name = str(char.get("charName") or "").strip()
+        for costume in char.get("costumes") or []:
+            costume_id = str(costume.get("costumeId") or "").strip()
+            if not costume_id:
+                continue
+            out[costume_id] = {
+                "char_name": char_name,
+                "costume_name": str(costume.get("costumeName") or "").strip(),
+                "release_date": str(costume.get("releaseDate") or "").strip(),
+            }
+    return out
+
+
+def _bd2_spine_title(asset_id: str, char_info: dict[str, dict[str, str]]) -> str:
+    match = re.match(r"char(\d{6})(?:_c)?$", asset_id)
+    meta = char_info.get(match.group(1) if match else "")
+    if not meta:
+        return asset_id
+    title = f"{meta.get('char_name') or 'Unknown'} - {meta.get('costume_name') or asset_id}"
+    if asset_id.endswith("_c"):
+        title += " (censored)"
+    return title
+
+
+def _bd2_spine_dir(root: str, asset_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", asset_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid Spine asset id")
+    base = os.path.realpath(os.path.join(root, "spine", "char"))
+    target = os.path.realpath(os.path.join(base, asset_id))
+    if not (target == base or target.startswith(base + os.sep)):
+        raise HTTPException(status_code=400, detail="Invalid Spine asset path")
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail="Spine asset not found")
+    return target
 
 
 def scan_audio_tracks(item_dir: str) -> List[dict]:
@@ -431,6 +540,57 @@ THUMBNAIL_DIR = os.path.join(os.getcwd(), ".thumbnails")
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
 
+
+@app.get("/bd2/spine")
+def list_bd2_spine_assets(db: Session = Depends(get_db)):
+    root = _bd2_asset_root(db)
+    char_root = os.path.join(root, "spine", "char")
+    if not os.path.isdir(char_root):
+        return {"root": root, "assets": []}
+
+    char_info = _bd2_char_info(root)
+    assets = []
+    for name in sorted(os.listdir(char_root)):
+        asset_dir = os.path.join(char_root, name)
+        if not os.path.isdir(asset_dir):
+            continue
+        files = sorted(
+            filename
+            for filename in os.listdir(asset_dir)
+            if os.path.isfile(os.path.join(asset_dir, filename))
+        )
+        skeleton = next((f for f in files if f.lower().endswith(".skel")), None)
+        atlas = next((f for f in files if f.lower().endswith(".atlas")), None)
+        textures = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+        if not skeleton or not atlas or not textures:
+            continue
+        assets.append({
+            "id": name,
+            "title": _bd2_spine_title(name, char_info),
+            "skeleton": skeleton,
+            "atlas": atlas,
+            "textures": textures,
+            "skeleton_url": f"/bd2/spine/{name}/{skeleton}",
+            "atlas_url": f"/bd2/spine/{name}/{atlas}",
+        })
+    return {"root": root, "assets": assets}
+
+
+@app.get("/bd2/spine/{asset_id}/{filename}")
+def get_bd2_spine_file(asset_id: str, filename: str, db: Session = Depends(get_db)):
+    root = _bd2_asset_root(db)
+    asset_dir = _bd2_spine_dir(root, asset_id)
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    target = os.path.realpath(os.path.join(asset_dir, safe_name))
+    real_asset_dir = os.path.realpath(asset_dir)
+    if not (target == real_asset_dir or target.startswith(real_asset_dir + os.sep)):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    if not os.path.exists(target) or not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="Spine file not found")
+    return FileResponse(target)
+
 DEFAULT_EXTERNAL_DOWNLOAD_DIR = os.path.join(os.getcwd(), "external_downloads")
 EXTERNAL_COVERS_DIR = os.path.abspath(os.path.join(os.getcwd(), "..", "covers"))
 os.makedirs(EXTERNAL_COVERS_DIR, exist_ok=True)
@@ -477,7 +637,7 @@ ADMIN_EXACT_PATHS = {
 
 
 def _public_path(path: str) -> bool:
-    return path in PUBLIC_PATHS
+    return path in PUBLIC_PATHS or path.startswith("/bd2/spine")
 
 
 def _admin_path(method: str, path: str) -> bool:

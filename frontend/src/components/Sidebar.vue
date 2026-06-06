@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { BarChart3, Book, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Headphones, Home, Image as ImageIcon, LogOut, Palette, Settings as SettingsIcon, Sparkles, Star, Users, RefreshCw } from 'lucide-vue-next'
+import { BarChart3, Book, Box, ChevronLeft, ChevronRight, CopyMinus, Film, Globe2, Headphones, Home, Image as ImageIcon, LogOut, Palette, Settings as SettingsIcon, Sparkles, Star, Users, RefreshCw } from 'lucide-vue-next'
 import type { User } from '../types'
 
 const props = defineProps<{
@@ -109,6 +109,11 @@ const toggle = () => {
       <router-link to="/creators" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="创作者">
         <Palette :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
         <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">创作者</span>
+      </router-link>
+
+      <router-link to="/bd2-spine" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="BD2 动态">
+        <Box :size="22" class="group-hover:scale-110 transition-transform shrink-0" />
+        <span v-if="!collapsed" class="font-medium whitespace-nowrap overflow-hidden">BD2 动态</span>
       </router-link>
 
       <router-link to="/stats" :class="baseLinkClass" active-class="bg-white/10 text-white shadow-inner border border-white/5" title="统计">

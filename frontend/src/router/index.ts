@@ -7,6 +7,7 @@ import UsersView from '../views/UsersView.vue'
 import StatsView from '../views/StatsView.vue'
 import CreatorsView from '../views/CreatorsView.vue'
 import MangaRecommendView from '../views/MangaRecommendView.vue'
+import Bd2SpineView from '../views/Bd2SpineView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -65,6 +66,11 @@ const router = createRouter({
       path: '/recommend',
       name: 'manga-recommend',
       component: MangaRecommendView
+    },
+    {
+      path: '/bd2-spine',
+      name: 'bd2-spine',
+      component: Bd2SpineView
     }
   ]
 })
