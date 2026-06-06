@@ -16,6 +16,8 @@ const loading = ref(true)
 // BD2 download state
 const downloadStatus = ref<'idle' | 'cloning' | 'done' | 'error'>('idle')
 const downloadError = ref('')
+const downloadStep = ref('')
+const downloadMb = ref(0)
 let _downloadPollTimer: ReturnType<typeof setInterval> | null = null
 
 const cancelDownload = async () => {
@@ -24,11 +26,15 @@ const cancelDownload = async () => {
   } catch { /* ignore */ }
   if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
   downloadStatus.value = 'idle'
+  downloadStep.value = ''
+  downloadMb.value = 0
 }
 
 const startDownload = async () => {
   downloadStatus.value = 'cloning'
   downloadError.value = ''
+  downloadStep.value = ''
+  downloadMb.value = 0
   try {
     await axios.post(`${API_BASE_URL}/bd2/spine/download`, {
       target_dir: 'E:\\hhh\\BD2',
@@ -38,6 +44,8 @@ const startDownload = async () => {
       try {
         const res = await axios.get(`${API_BASE_URL}/bd2/spine/download/status`)
         const st = res.data.status as string
+        downloadStep.value = (res.data.step as string) || ''
+        downloadMb.value = (res.data.mb as number) || 0
         if (st === 'done') {
           downloadStatus.value = 'done'
           if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
@@ -252,8 +260,9 @@ watch(hideEffectLayers, () => applyEffectLayerFilter())
         >
           <Loader2 v-if="downloadStatus === 'cloning'" :size="16" class="animate-spin" />
           <Download v-else :size="16" />
-          {{ downloadStatus === 'cloning' ? '下载中… 点击取消' : downloadStatus === 'error' ? '重试' : '下载女性角色' }}
+          {{ downloadStatus === 'cloning' ? `下载中 ${downloadMb > 0 ? downloadMb + ' MB' : ''}… 点击取消` : downloadStatus === 'error' ? '重试' : '下载女性角色' }}
         </button>
+        <span v-if="downloadStatus === 'cloning' && downloadStep" class="text-xs text-amber-200/60">{{ downloadStep === 'fetching_charinfo' ? '获取角色列表…' : downloadStep === 'downloading' ? '正在下载' : downloadStep === 'extracting' ? '正在解压…' : downloadStep }}</span>
         <span v-if="downloadStatus === 'done'" class="text-xs text-green-300/70 font-bold">已下载</span>
         <span v-if="downloadStatus === 'error'" class="text-xs text-red-300/70 max-w-[180px] truncate" :title="downloadError">{{ downloadError }}</span>
         <button
