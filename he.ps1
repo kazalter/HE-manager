@@ -298,6 +298,12 @@ function Configure-DownloaderBridge {
         $env:HE_CALLBACK_TOKEN = $heToken
     }
 
+    if (-not $env:HE_BD2_ASSET_ROOT) {
+        $bd2Default = Join-Path $Root "..\Brown-Dust-2-Asset-test"
+        if (Test-Path $bd2Default) { $env:HE_BD2_ASSET_ROOT = $bd2Default }
+        else { $env:HE_BD2_ASSET_ROOT = $bd2Default }  # let the endpoint report 404 if missing
+    }
+
     Write-Host "  downloader bridge: $($env:HE_DOWNLOADER_URL)" -ForegroundColor DarkGray
     if ($env:HE_CALLBACK_TOKEN) {
         Write-Host "  downloader callback: $($env:HE_PUBLIC_URL)/external/downloader/callback?token=***" -ForegroundColor DarkGray
