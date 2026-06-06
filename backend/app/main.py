@@ -6,6 +6,8 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
+import threading
 import time
 import uuid
 import zipfile
@@ -680,10 +682,19 @@ def bd2_download_status():
 
 
 @app.post("/bd2/spine/download/cancel")
-def bd2_download_cancel():
-    if _BD2_DOWNLOAD_STATE.get("status") != "cloning":
+def bd2_download_cancel(_: models.User = Depends(auth.require_admin)):
+    status = _BD2_DOWNLOAD_STATE.get("status")
+    if status not in {"checking", "cloning", "pulling"}:
         raise HTTPException(status_code=409, detail="No download in progress")
-    _BD2_DOWNLOAD_STATE["cancelled"] = True
+    _BD2_DOWNLOAD_STATE["cancel_requested"] = True
+    # Best-effort hard stop the git subprocess so progress unblocks; the
+    # worker loop will see the flag and exit cleanly on its own.
+    proc = _BD2_DOWNLOAD_STATE.get("proc")
+    if proc is not None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
     return {"status": "cancelling"}
 
 
@@ -715,11 +726,167 @@ def _bd2_spine_file_response(asset_id: str, filename: str, *, kind: str, db: Ses
 
 
 # ---------------------------------------------------------------------------
-# BD2 Spine download — sparse git clone female-only assets from GitHub
+# BD2 Spine download — incremental git clone/pull from GitHub
 # ---------------------------------------------------------------------------
+# First run:   `git clone --filter=blob:none` (no checkout) into target_dir
+#              followed by a `sparse-checkout` for spine/char, spine/cutscenes,
+#              spine/illust, CharInfo(Dropped).json — only the directories that
+#              contain female characters are pulled, so the on-disk footprint
+#              is small (a few hundred MB of texture/atlas, not the full GB
+#              zipball).
+# Subsequent: `git fetch --prune origin` + `git reset --hard origin/master`
+#              re-uses the local pack store; only the deltas come down.
+#
+# Proxy: 127.0.0.1:7897 (socks5 primary, http fallback).  The proxy is written
+# into the *local* repo's .git/config (not the user's global git config), so
+# other repositories are untouched.
 
 _BD2_REPO_URL = "https://github.com/myssal/Brown-Dust-2-Asset.git"
 _BD2_DOWNLOAD_STATE: dict[str, object] = {}
+
+
+def _bd2_proxy_url(scheme: str) -> str:
+    """Return ``scheme://host:port`` for git proxy config.
+
+    Read from env on every call so operators can change the proxy without
+    restarting the backend.  Defaults stay 127.0.0.1:7897.
+    """
+    host = os.getenv("HE_BD2_PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = os.getenv("HE_BD2_PROXY_PORT", "7897").strip() or "7897"
+    return f"{scheme}://{host}:{port}"
+
+
+def _bd2_apply_git_proxy(repo_dir: str) -> None:
+    """Write proxy settings into the local repo's .git/config.
+
+    socks5 takes priority (DNS leaks to the proxy with socks5h).  If the
+    user disables socks5 (e.g. their proxy only speaks http), set
+    ``HE_BD2_PROXY_SCHEME=http``.
+    """
+    scheme = os.getenv("HE_BD2_PROXY_SCHEME", "socks5h").lower()
+    if scheme not in {"socks5", "socks5h", "http", "https"}:
+        scheme = "socks5h"
+    proxy = _bd2_proxy_url(scheme)
+    for proto in ("http", "https"):
+        # `git config --local --replace-all` so re-runs don't stack up.
+        subprocess.run(
+            ["git", "config", "--local", f"{proto}.proxy", proxy],
+            cwd=repo_dir,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    _BD2_DOWNLOAD_STATE["proxy"] = proxy
+
+
+def _bd2_git_env() -> dict[str, str]:
+    """Env for git subprocesses: force progress to stderr (machine-parseable)."""
+    env = os.environ.copy()
+    # GIT_TERMINAL_PROGRESS=1 makes git write the same progress lines to
+    # stderr even when stderr isn't a TTY (background task).  Without this
+    # the progress output is suppressed in non-interactive runs.
+    env["GIT_TERMINAL_PROGRESS"] = "1"
+    env["GCM_INTERACTIVE"] = "Never"
+    # Don't let git ask for credentials — anonymous read-only repo.
+    env["GIT_ASKPASS"] = "/bin/true"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+# Regexes for parsing `git --progress` lines.
+#   Receiving objects:   45% (1234/2700), 5.00 MiB | 3.50 MiB/s
+#   Resolving deltas:    12% (200/1700)
+#   Updating files:      80% (160/200)
+_BD2_PROGRESS_RE = re.compile(
+    r"(\w[\w\s]*?):\s+(\d+)%\s+\(\s*(\d+)\s*/\s*(\d+)\s*\)"
+    r"(?:,\s+([0-9.]+)\s*(KiB|MiB|GiB|KB|MB|GB)\s*\|\s*"
+    r"([0-9.]+)\s*(KiB|MiB|GiB|KB|MB|GB)/s)?"
+)
+_BD2_UNIT_BYTES = {
+    "B": 1,
+    "KiB": 1024, "KB": 1024,
+    "MiB": 1024 ** 2, "MB": 1024 ** 2,
+    "GiB": 1024 ** 3, "GB": 1024 ** 3,
+}
+
+
+def _bd2_apply_progress_line(line: str) -> None:
+    """Parse one stderr line from git --progress and update state.
+
+    We pick the line whose phase gives the best user signal:
+      * Receiving objects  → primary progress (most of clone time)
+      * Resolving deltas / Updating files → tail of clone
+      * Compressing / Counting → small weight
+    """
+    m = _BD2_PROGRESS_RE.search(line)
+    if not m:
+        return
+    phase, pct, done, total, bytes_v, bytes_u, speed_v, speed_u = m.groups()
+    pct_i = int(pct)
+    done_i = int(done)
+    total_i = int(total)
+    bytes_f = float(bytes_v) * _BD2_UNIT_BYTES[bytes_u] if bytes_v else None
+    speed_f = float(speed_v) * _BD2_UNIT_BYTES[speed_u] if speed_v else None
+
+    # Only overwrite mb/speed when "Receiving objects" reports them —
+    # that's the actual transfer phase.  Other phases don't carry throughput.
+    if bytes_f is not None:
+        _BD2_DOWNLOAD_STATE["mb"] = round(bytes_f / (1 << 20), 1)
+    if speed_f is not None:
+        _BD2_DOWNLOAD_STATE["speed_mb_s"] = round(speed_f / (1 << 20), 2)
+    _BD2_DOWNLOAD_STATE["pct"] = pct_i
+    _BD2_DOWNLOAD_STATE["objects_done"] = done_i
+    _BD2_DOWNLOAD_STATE["objects_total"] = total_i
+    _BD2_DOWNLOAD_STATE["phase"] = phase.strip()
+
+
+def _bd2_stream_git(args: list[str], cwd: str) -> int:
+    """Run a git command streaming stderr/stdout into progress state.
+
+    Returns the process exit code.  Raises nothing on non-zero exit — the
+    caller reads the return code and the captured stderr from
+    ``_BD2_DOWNLOAD_STATE["stderr_tail"]`` for the error message.
+    """
+    env = _bd2_git_env()
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    _BD2_DOWNLOAD_STATE["proc"] = proc
+    stderr_tail: list[str] = []
+
+    def _drain(stream, *, is_err: bool) -> None:
+        for raw in iter(stream.readline, ""):
+            line = raw.rstrip()
+            if is_err:
+                _bd2_apply_progress_line(line)
+                stderr_tail.append(line)
+                if len(stderr_tail) > 20:
+                    stderr_tail.pop(0)
+
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, False), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, True), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    rc = proc.wait()
+    t_out.join(timeout=2)
+    t_err.join(timeout=2)
+    _BD2_DOWNLOAD_STATE.pop("proc", None)
+    _BD2_DOWNLOAD_STATE["stderr_tail"] = stderr_tail[-5:]
+    return rc
+
+
+def _bd2_run_git_with_cancel(args: list[str], cwd: str) -> int:
+    """Run git, polling the cancel flag so terminate() fires promptly."""
+    # _bd2_stream_git already stores `proc` on the state dict.  Cancel
+    # endpoint will call .terminate() on it.  We just wait here.
+    return _bd2_stream_git(args, cwd)
 
 
 def _bd2_female_spine_dirs(char_info_json_text: str) -> list[str]:
@@ -762,229 +929,347 @@ def _bd2_female_spine_dirs(char_info_json_text: str) -> list[str]:
     return dirs
 
 
-def _bd2_run_download(target_dir: str) -> None:
-    """Background task: download female BD2 Spine assets via GitHub ZIP.
+def _bd2_sparse_paths(female_dirs: list[str]) -> list[str]:
+    """Build the sparse-checkout include list from the female directory names.
 
-    Downloads the repo zipball with resume support (.part file) and skips
-    already-extracted files.  No git clone, no API rate limits.
+    Mapping mirrors the original zipball filter logic so the on-disk result
+    is identical.
     """
-    import urllib.request as _ur
-    import base64 as _b64, json as _json, zipfile as _zf
+    paths: set[str] = set()
+    for d in female_dirs:
+        if d.startswith("cutscene_"):
+            paths.add(f"spine/cutscenes/{d}")
+        elif d.startswith("illust_"):
+            paths.add(f"spine/illust/{d}")
+        elif d.startswith("char"):
+            paths.add(f"spine/char/{d}")
+    paths.add(BD2_CHARINFO_FILENAME)
+    return sorted(paths)
 
-    _BD2_DOWNLOAD_STATE["status"] = "cloning"
-    _BD2_DOWNLOAD_STATE["target"] = target_dir
-    _BD2_DOWNLOAD_STATE["error"] = None
 
-    ZIP_URL = "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/zipball/master"
+def _bd2_init_sparse_repo(target_dir: str, female_dirs: list[str]) -> None:
+    """Configure sparse-checkout cone mode with the female-only paths."""
+    paths = _bd2_sparse_paths(female_dirs)
+    cfg = subprocess.run(
+        ["git", "config", "--local", "core.sparseCheckout", "true"],
+        cwd=target_dir,
+        capture_output=True,
+        text=True,
+    )
+    if cfg.returncode != 0:
+        raise RuntimeError(f"git config sparseCheckout failed: {cfg.stderr.strip()}")
+    # Write the include list (one pattern per line).
+    info_dir = os.path.join(target_dir, ".git", "info")
+    os.makedirs(info_dir, exist_ok=True)
+    sparse_file = os.path.join(info_dir, "sparse-checkout")
+    with open(sparse_file, "w", encoding="utf-8") as fh:
+        # Cone-mode prefixes (trailing slash = directory) cover the dir tree.
+        for p in paths:
+            if "/" in p:
+                fh.write(f"/{p.rsplit('/', 1)[0]}/\n")
+            else:
+                fh.write(f"/{p}\n")
+    _BD2_DOWNLOAD_STATE["sparse_paths"] = paths
 
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        if _BD2_DOWNLOAD_STATE.get("cancelled"):
-            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+
+def _bd2_clear_git_locks(repo_dir: str) -> None:
+    """Remove stale .git/*.lock files left by a killed git process."""
+    git_dir = os.path.join(repo_dir, ".git")
+    if not os.path.isdir(git_dir):
+        return
+    for entry in os.listdir(git_dir):
+        if entry.endswith(".lock"):
+            try:
+                os.remove(os.path.join(git_dir, entry))
+            except OSError:
+                pass
+
+
+def _bd2_run_download(target_dir: str) -> None:
+    """Background task: incremental git sync of female BD2 Spine assets.
+
+    First call   → ``git clone --filter=blob:none --no-checkout`` then
+                   ``git sparse-checkout set`` to pull only the female
+                   character directories plus CharInfo.
+    Later calls  → ``git fetch --prune origin`` + ``git reset --hard origin/master``
+                   (re-uses local packs, only the deltas come down).
+    """
+    # Reset state for this run.  We keep the same dict object so any in-flight
+    # status poll sees a consistent shape.
+    _BD2_DOWNLOAD_STATE.clear()
+    _BD2_DOWNLOAD_STATE.update({
+        "status": "checking",
+        "step": "checking",
+        "target": target_dir,
+        "mode": None,        # filled in once we know: "clone" or "pull"
+        "pct": 0,
+        "mb": 0.0,
+        "speed_mb_s": 0.0,
+        "objects_done": 0,
+        "objects_total": 0,
+        "phase": "",
+        "stderr_tail": [],
+        "error": None,
+        "started_at": time.time(),
+    })
+
+    # --- preflight: target_dir must be inside HE_BD2_ALLOWED_ROOTS or unset ---
+    real_target = os.path.realpath(target_dir)
+    allowed_roots_env = os.getenv("HE_BD2_ALLOWED_ROOTS", "").strip()
+    if allowed_roots_env:
+        allowed = [os.path.realpath(p) for p in allowed_roots_env.split(os.pathsep) if p.strip()]
+        if not any(real_target == root or real_target.startswith(root + os.sep) for root in allowed):
+            _BD2_DOWNLOAD_STATE["status"] = "error"
+            _BD2_DOWNLOAD_STATE["error"] = (
+                f"target_dir '{target_dir}' is outside HE_BD2_ALLOWED_ROOTS"
+            )
             return
 
-        # 1. Get CharInfo.json — API (fresh) > cached (stale) > fallback (local).
-        _BD2_DOWNLOAD_STATE["step"] = "fetching_charinfo"
-        ci_local = os.path.join(target_dir, BD2_CHARINFO_FILENAME)
+    # Cancel before we even start.
+    if _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+        return
 
-        def _read_cached() -> str | None:
-            if os.path.exists(ci_local) and os.path.getsize(ci_local) > 1000:
-                with open(ci_local, encoding="utf-8-sig") as fh:
-                    return fh.read()
-            return None
+    repo_dir = real_target
+    is_existing = os.path.isdir(os.path.join(repo_dir, ".git"))
 
-        charinfo_text: str | None = None
-        # Try API first for the latest character data.
-        try:
-            ci_req = _ur.Request(
-                "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/contents/CharInfo(Dropped).json",
-                headers={"Accept": "application/vnd.github.v3+json"},
-            )
-            with _ur.urlopen(ci_req, timeout=30) as resp:
-                ci_data = _json.loads(resp.read().decode())
-            charinfo_text = _b64.b64decode(ci_data["content"]).decode("utf-8-sig")
-            _BD2_DOWNLOAD_STATE["charinfo_source"] = "api"
-            # Cache the fresh copy.
-            os.makedirs(os.path.dirname(ci_local), exist_ok=True)
-            with open(ci_local, "w", encoding="utf-8") as fh:
-                fh.write(charinfo_text)
-        except Exception:
-            pass  # API failed, try cache next
-
-        # API failed — use cached copy from target dir.
-        if charinfo_text is None:
-            charinfo_text = _read_cached()
-            if charinfo_text:
-                _BD2_DOWNLOAD_STATE["charinfo_source"] = "cached"
-
-        # No cache — try local fallback copies.
-        if charinfo_text is None:
-            for src_dir in (
-                os.getenv("HE_BD2_ASSET_ROOT", ""),
-                r"C:\Users\25768\Desktop\HE_Project\Brown-Dust-2-Asset-test",
-            ):
-                src = os.path.join(src_dir, BD2_CHARINFO_FILENAME) if src_dir else ""
-                if src and os.path.exists(src):
-                    with open(src, encoding="utf-8-sig") as fh:
-                        charinfo_text = fh.read()
-                    _BD2_DOWNLOAD_STATE["charinfo_source"] = f"fallback:{src}"
-                    # Also cache it so next time it's available.
-                    os.makedirs(os.path.dirname(ci_local), exist_ok=True)
-                    with open(ci_local, "w", encoding="utf-8") as fh:
-                        fh.write(charinfo_text)
-                    break
-
-        if charinfo_text is None:
-            raise RuntimeError(
-                "Cannot fetch CharInfo.json (API rate-limited) and no local copy found. "
-                "Place CharInfo(Dropped).json in the target directory and retry."
-            )
-
-        female_dirs = _bd2_female_spine_dirs(charinfo_text)
-        if not female_dirs:
-            raise RuntimeError("No female spine directories found")
-
-        wanted: set[str] = {BD2_CHARINFO_FILENAME}
-        for d in female_dirs:
-            if d.startswith("cutscene_"):
-                wanted.add(f"spine/cutscenes/{d}")
-            elif d.startswith("illust_"):
-                wanted.add(f"spine/illust/{d}")
-            elif d.startswith("char"):
-                wanted.add(f"spine/char/{d}")
-
-        # 2. Download the zipball with resume support.
-        _BD2_DOWNLOAD_STATE["step"] = "downloading"
-        _BD2_DOWNLOAD_STATE["total_dirs"] = len(female_dirs)
-
-        zip_path = os.path.join(target_dir, "_repo.zip")
-        part_path = zip_path + ".part"
-        total_bytes = 0
-
-        # Check for partial download to resume.
-        existing_size = 0
-        if os.path.exists(part_path):
-            existing_size = os.path.getsize(part_path)
-
-        # Probe remote size.
-        remote_size: int | None = None
-        try:
-            head_req = _ur.Request(ZIP_URL, method="HEAD")
-            with _ur.urlopen(head_req, timeout=15) as hr:
-                cl = hr.headers.get("Content-Length")
-                if cl:
-                    remote_size = int(cl)
-        except Exception:
-            pass  # can't probe, download from scratch
-
-        if existing_size > 0:
-            # If we already have the complete file, skip download.
-            if remote_size and existing_size >= remote_size:
-                os.rename(part_path, zip_path)
-                _BD2_DOWNLOAD_STATE["mb"] = round(existing_size / (1 << 20), 1)
-                _BD2_DOWNLOAD_STATE["step"] = "extracting"
-            elif remote_size and existing_size < remote_size:
-                # Try resume with Range header.
-                range_req = _ur.Request(ZIP_URL, headers={"Range": f"bytes={existing_size}-"})
-                try:
-                    with _ur.urlopen(range_req, timeout=30) as rr:
-                        if rr.status == 206:  # Partial Content
-                            with open(part_path, "ab") as tmp:
-                                while True:
-                                    if _BD2_DOWNLOAD_STATE.get("cancelled"):
-                                        return
-                                    chunk = rr.read(1 << 20)
-                                    if not chunk:
-                                        break
-                                    tmp.write(chunk)
-                                    existing_size += len(chunk)
-                                    _BD2_DOWNLOAD_STATE["bytes"] = existing_size
-                                    _BD2_DOWNLOAD_STATE["mb"] = round(existing_size / (1 << 20), 1)
-                            os.rename(part_path, zip_path)
-                            _BD2_DOWNLOAD_STATE["step"] = "extracting"
-                        else:
-                            raise Exception(f"Range not supported (status {rr.status})")
-                except Exception:
-                    # Range failed — restart download from scratch.
-                    os.remove(part_path)
-                    existing_size = 0
-
-        # Full download if no resume.
-        if existing_size == 0 and _BD2_DOWNLOAD_STATE.get("step") != "extracting":
-            with _ur.urlopen(ZIP_URL, timeout=600) as resp:
-                total_bytes = 0
-                with open(part_path, "wb") as tmp:
-                    while True:
-                        if _BD2_DOWNLOAD_STATE.get("cancelled"):
-                            return
-                        chunk = resp.read(1 << 20)
-                        if not chunk:
-                            break
-                        tmp.write(chunk)
-                        total_bytes += len(chunk)
-                        _BD2_DOWNLOAD_STATE["bytes"] = total_bytes
-                        _BD2_DOWNLOAD_STATE["mb"] = round(total_bytes / (1 << 20), 1)
-            os.rename(part_path, zip_path)
-            _BD2_DOWNLOAD_STATE["step"] = "extracting"
-
-        # 3. Extract only wanted entries, skipping files that already exist.
-        _BD2_DOWNLOAD_STATE["step"] = "extracting"
-        extracted = 0
-        skipped = 0
-        prefix_len = 0
-        with _zf.ZipFile(zip_path) as zf:
-            for info in zf.infolist():
-                if _BD2_DOWNLOAD_STATE.get("cancelled"):
-                    return
-                if prefix_len == 0 and "/" in info.filename:
-                    prefix_len = info.filename.index("/") + 1
-                rel = info.filename[prefix_len:] if prefix_len else info.filename
-                if info.is_dir():
-                    continue
-                if not any(rel == w or rel.startswith(w + "/") or rel.startswith(w + "\\") for w in wanted):
-                    continue
-                dest = os.path.join(target_dir, rel)
-                if os.path.exists(dest) and os.path.getsize(dest) == info.file_size:
-                    skipped += 1
-                    continue
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with zf.open(info) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                extracted += 1
-
-        # Clean up.
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
-        if os.path.exists(part_path):
-            os.remove(part_path)
-
-        _BD2_DOWNLOAD_STATE["status"] = "done"
-        _BD2_DOWNLOAD_STATE["extracted"] = extracted
-        _BD2_DOWNLOAD_STATE["skipped"] = skipped
+    try:
+        if is_existing:
+            _bd2_run_pull(repo_dir)
+        else:
+            _bd2_run_clone(repo_dir)
     except Exception as exc:
         _BD2_DOWNLOAD_STATE["status"] = "error"
         _BD2_DOWNLOAD_STATE["error"] = str(exc)
-        # Keep .part file for resume on retry; only remove if cancelled.
-        if _BD2_DOWNLOAD_STATE.get("cancelled"):
-            for p in (zip_path, part_path):
-                try: os.remove(p)
-                except Exception: pass
-        zip_path = os.path.join(target_dir, "_repo.zip")
-        part_path = zip_path + ".part"
-        for p in (zip_path, part_path):
-            if os.path.exists(p):
-                try: os.remove(p)
-                except Exception: pass
+        # Drop any zombie lock files so the next retry can run immediately.
+        _bd2_clear_git_locks(repo_dir)
+        return
+
+    # If a cancel arrived mid-flight, _bd2_run_pull/_bd2_run_clone will have
+    # set status='cancelled' itself.  Only continue with post-sync work when
+    # we actually finished.
+    if _BD2_DOWNLOAD_STATE.get("status") == "cancelled":
+        _bd2_clear_git_locks(repo_dir)
+        return
+
+    # --- post-sync: ensure DB has a Folder row pointing at repo_dir so the
+    # web preview picks it up via _bd2_asset_root() without manual setup. ---
+    try:
+        _bd2_register_folder(repo_dir)
+    except Exception as exc:
+        # Non-fatal — sync succeeded, just registration failed.
+        _BD2_DOWNLOAD_STATE["register_error"] = str(exc)
+
+    _BD2_DOWNLOAD_STATE["status"] = "done"
+    _BD2_DOWNLOAD_STATE["finished_at"] = time.time()
+
+
+def _bd2_run_clone(repo_dir: str) -> None:
+    """First-time clone: minimal blob filter, then sparse-checkout init."""
+    parent = os.path.dirname(repo_dir) or "."
+    leaf = os.path.basename(repo_dir) or "Brown-Dust-2-Asset"
+    os.makedirs(parent, exist_ok=True)
+
+    _BD2_DOWNLOAD_STATE["status"] = "cloning"
+    _BD2_DOWNLOAD_STATE["mode"] = "clone"
+    _BD2_DOWNLOAD_STATE["step"] = "cloning"
+    _BD2_DOWNLOAD_STATE["pct"] = 0
+
+    # `--filter=blob:none` keeps the commit graph but skips blob download on
+    # the initial fetch; we then `sparse-checkout init` and `set` the
+    # female-only paths so only the wanted blobs ever come down.
+    rc = _bd2_run_git_with_cancel(
+        [
+            "git", "clone",
+            "--filter=blob:none",
+            "--no-checkout",
+            "--progress",
+            _BD2_REPO_URL,
+            leaf,
+        ],
+        cwd=parent,
+    )
+    if rc != 0:
+        if _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+            return
+        raise RuntimeError(
+            f"git clone failed (rc={rc}): "
+            + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+        )
+
+    if _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        # Move the partial repo out of the way so the next run starts clean.
+        _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+        return
+
+    # Apply proxy to the freshly-created repo before any subsequent fetch.
+    _bd2_apply_git_proxy(repo_dir)
+
+    # Read CharInfo to figure out which paths to checkout.
+    ci_text = _bd2_read_charinfo(repo_dir)
+    if not ci_text:
+        # No CharInfo → fall back to a full checkout so the repo is at least
+        # usable, but warn the user.
+        _BD2_DOWNLOAD_STATE["step"] = "checking_out_all"
+        rc = _bd2_run_git_with_cancel(
+            ["git", "checkout", "--progress", "origin/HEAD"],
+            cwd=repo_dir,
+        )
+        if rc != 0 and not _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+            raise RuntimeError(
+                f"git checkout failed (rc={rc}): "
+                + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+            )
+        _BD2_DOWNLOAD_STATE["status"] = "done"
+        return
+
+    female_dirs = _bd2_female_spine_dirs(ci_text)
+    _BD2_DOWNLOAD_STATE["female_dirs"] = len(female_dirs)
+    if not female_dirs:
+        raise RuntimeError("No female spine directories found in CharInfo")
+
+    # Now init sparse-checkout, then read-tree to populate working tree.
+    _BD2_DOWNLOAD_STATE["step"] = "sparse_checkout"
+    _bd2_init_sparse_repo(repo_dir, female_dirs)
+
+    rc = _bd2_run_git_with_cancel(
+        ["git", "sparse-checkout", "init", "--cone"],
+        cwd=repo_dir,
+    )
+    if rc != 0 and not _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        raise RuntimeError(
+            f"git sparse-checkout init failed (rc={rc}): "
+            + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+        )
+
+    # `read-tree` materialises the working tree for the configured sparse set.
+    _BD2_DOWNLOAD_STATE["step"] = "checking_out"
+    rc = _bd2_run_git_with_cancel(
+        ["git", "read-tree", "-mu", "--reset", "HEAD"],
+        cwd=repo_dir,
+    )
+    if rc != 0 and not _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        raise RuntimeError(
+            f"git read-tree failed (rc={rc}): "
+            + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+        )
+
+
+def _bd2_run_pull(repo_dir: str) -> None:
+    """Subsequent runs: fetch only, then reset to origin/master."""
+    _bd2_apply_git_proxy(repo_dir)
+
+    _BD2_DOWNLOAD_STATE["status"] = "pulling"
+    _BD2_DOWNLOAD_STATE["mode"] = "pull"
+    _BD2_DOWNLOAD_STATE["step"] = "fetching"
+
+    rc = _bd2_run_git_with_cancel(
+        [
+            "git", "fetch", "--prune", "--progress", "origin",
+        ],
+        cwd=repo_dir,
+    )
+    if rc != 0:
+        if _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+            return
+        raise RuntimeError(
+            f"git fetch failed (rc={rc}): "
+            + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+        )
+
+    if _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+        return
+
+    # Determine the upstream branch tip; default to origin/master.
+    _BD2_DOWNLOAD_STATE["step"] = "merging"
+    head_ref = "origin/master"
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "origin/HEAD"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    if probe.returncode == 0:
+        head_ref = "origin/HEAD"
+
+    rc = _bd2_run_git_with_cancel(
+        ["git", "reset", "--hard", "--progress", head_ref],
+        cwd=repo_dir,
+    )
+    if rc != 0 and not _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+        raise RuntimeError(
+            f"git reset failed (rc={rc}): "
+            + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+        )
+
+    # Re-read CharInfo post-pull — the female set may have changed upstream.
+    ci_text = _bd2_read_charinfo(repo_dir)
+    if ci_text:
+        female_dirs = _bd2_female_spine_dirs(ci_text)
+        _BD2_DOWNLOAD_STATE["female_dirs"] = len(female_dirs)
+        # Refresh sparse-checkout if upstream added/removed entries.
+        _bd2_init_sparse_repo(repo_dir, female_dirs)
+        rc = _bd2_run_git_with_cancel(
+            ["git", "read-tree", "-mu", "--reset", "HEAD"],
+            cwd=repo_dir,
+        )
+        if rc != 0 and not _BD2_DOWNLOAD_STATE.get("cancel_requested"):
+            raise RuntimeError(
+                f"git read-tree (post-pull) failed (rc={rc}): "
+                + " | ".join(_BD2_DOWNLOAD_STATE.get("stderr_tail", []))
+            )
+
+
+def _bd2_read_charinfo(repo_dir: str) -> str | None:
+    """Return the working-tree CharInfo text, or None if not yet checked out."""
+    path = os.path.join(repo_dir, BD2_CHARINFO_FILENAME)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _bd2_register_folder(target_dir: str) -> None:
+    """Upsert a Folder(scan_mode='bd2_asset') row pointing at *target_dir*.
+
+    Mirrors what the legacy importer used to do, so /bd2/spine/ picks up the
+    new location without an environment-variable restart.
+    """
+    from .database import SessionLocal
+    db = SessionLocal()
+    try:
+        existing = db.query(models.Folder).filter(models.Folder.path == target_dir).first()
+        if existing:
+            existing.scan_mode = "bd2_asset"
+            db.commit()
+            return
+        folder = models.Folder(
+            path=target_dir,
+            scan_mode="bd2_asset",
+            thumbnail_enabled=False,
+        )
+        db.add(folder)
+        db.commit()
+    finally:
+        db.close()
 
 
 @app.post("/bd2/spine/download")
-def bd2_download(payload: dict, background_tasks: BackgroundTasks):
+def bd2_download(
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    _: models.User = Depends(auth.require_admin),
+):
     target_dir = str(payload.get("target_dir") or "").strip()
     if not target_dir:
         raise HTTPException(status_code=400, detail="target_dir is required")
-    if _BD2_DOWNLOAD_STATE.get("status") == "cloning":
+    if _BD2_DOWNLOAD_STATE.get("status") in {"checking", "cloning", "pulling"}:
         raise HTTPException(status_code=409, detail="Download already in progress")
-    _BD2_DOWNLOAD_STATE.clear()
+    target_dir = os.path.abspath(target_dir)
     background_tasks.add_task(_bd2_run_download, target_dir)
     return {"status": "started", "target_dir": target_dir}
 
