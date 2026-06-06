@@ -299,9 +299,11 @@ function Configure-DownloaderBridge {
     }
 
     if (-not $env:HE_BD2_ASSET_ROOT) {
-        $bd2Default = Join-Path $Root "..\Brown-Dust-2-Asset-test"
-        if (Test-Path $bd2Default) { $env:HE_BD2_ASSET_ROOT = $bd2Default }
-        else { $env:HE_BD2_ASSET_ROOT = $bd2Default }  # let the endpoint report 404 if missing
+        $bd2Main = "E:\hhh\BD2"
+        $bd2Fallback = Join-Path $Root "..\Brown-Dust-2-Asset-test"
+        if (Test-Path $bd2Main) { $env:HE_BD2_ASSET_ROOT = $bd2Main }
+        elseif (Test-Path $bd2Fallback) { $env:HE_BD2_ASSET_ROOT = $bd2Fallback }
+        else { $env:HE_BD2_ASSET_ROOT = $bd2Main }
     }
 
     Write-Host "  downloader bridge: $($env:HE_DOWNLOADER_URL)" -ForegroundColor DarkGray
