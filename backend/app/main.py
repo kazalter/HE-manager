@@ -781,6 +781,7 @@ def _bd2_spine_file_response(asset_id: str, filename: str, *, kind: str, db: Ses
         return Response(
             content=_bd2_atlas_with_spine41_aliases(atlas_text),
             media_type="text/plain; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
         )
     return FileResponse(target)
 

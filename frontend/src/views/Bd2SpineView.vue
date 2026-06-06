@@ -10,6 +10,7 @@ import type { Bd2SpineAsset, Bd2SpineListResponse } from '../types'
 
 const STORAGE_KEY = 'he_manager_bd2_target_dir'
 const DEFAULT_TARGET_DIR = 'E:\\hhh\\BD2'
+const SPINE_ASSET_CACHE_VERSION = 'spine41-atlas-alias-v2'
 
 const assets = ref<Bd2SpineAsset[]>([])
 const selectedId = ref('')
@@ -151,7 +152,10 @@ const charAssetCount = computed(() => assets.value.filter((asset) => asset.kind 
 const cutsceneAssetCount = computed(() => assets.value.filter((asset) => asset.kind === 'cutscene').length)
 const illustAssetCount = computed(() => assets.value.filter((asset) => asset.kind === 'illust').length)
 
-const assetUrl = (path: string) => `${API_BASE_URL}${path}`
+const assetUrl = (path: string) => {
+  const separator = path.includes('?') ? '&' : '?'
+  return `${API_BASE_URL}${path}${separator}v=${SPINE_ASSET_CACHE_VERSION}`
+}
 
 // Show "downloading" if a git process is actually running.
 const isDownloading = computed(
