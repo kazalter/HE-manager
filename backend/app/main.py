@@ -763,94 +763,110 @@ def _bd2_female_spine_dirs(char_info_json_text: str) -> list[str]:
 
 
 def _bd2_run_download(target_dir: str) -> None:
-    """Background task: shallow-clone BD2 repo and delete male character dirs."""
-    import subprocess as _sp
+    """Background task: download female BD2 Spine assets via GitHub ZIP.
+
+    Downloads the repo zipball from codeload.github.com and selectively
+    extracts only female character spine directories on the fly — one
+    HTTP request, no git clone, no API rate limits.
+    """
+    import urllib.request as _ur
+    import base64 as _b64, json as _json, zipfile as _zf
 
     _BD2_DOWNLOAD_STATE["status"] = "cloning"
     _BD2_DOWNLOAD_STATE["target"] = target_dir
     _BD2_DOWNLOAD_STATE["error"] = None
 
+    ZIP_URL = "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/zipball/master"
+
     try:
         os.makedirs(target_dir, exist_ok=True)
 
-        # 1. Clone or pull the repo (full shallow clone — ~11 GB).
         if _BD2_DOWNLOAD_STATE.get("cancelled"):
             _BD2_DOWNLOAD_STATE["status"] = "cancelled"
             return
-        if os.path.isdir(os.path.join(target_dir, ".git")):
-            _BD2_DOWNLOAD_STATE["step"] = "pulling"
-            _sp.run(
-                ["git", "-C", target_dir, "pull", "--depth", "1", "origin", "master"],
-                check=True, capture_output=True, text=True,
-            )
-        else:
-            _BD2_DOWNLOAD_STATE["step"] = "cloning"
-            _sp.run(
-                [
-                    "git", "clone", "--depth", "1", "--single-branch",
-                    _BD2_REPO_URL, target_dir,
-                ],
-                check=True, capture_output=True, text=True,
-            )
 
-        # 2. Read CharInfo.json to find male character spine directories.
-        _BD2_DOWNLOAD_STATE["step"] = "filtering"
-        charinfo_path = os.path.join(target_dir, BD2_CHARINFO_FILENAME)
-        with open(charinfo_path, encoding="utf-8-sig") as fh:
-            charinfo_text = fh.read()
-
-        # Re-parse CharInfo.json without filtering to get male dirs.
-        import json as _json
-        text = re.sub(
-            r'("censored_spine"\s*:\s*"[^"]+")\s*("cutscene"\s*:)',
-            r"\1,\n        \2", charinfo_text,
+        # 1. Fetch CharInfo.json via API to build the female allowlist.
+        _BD2_DOWNLOAD_STATE["step"] = "fetching_charinfo"
+        ci_req = _ur.Request(
+            "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/contents/CharInfo(Dropped).json",
+            headers={"Accept": "application/vnd.github.v3+json"},
         )
-        rows = _json.loads(text)
+        with _ur.urlopen(ci_req, timeout=30) as resp:
+            ci_data = _json.loads(resp.read().decode())
+        charinfo_text = _b64.b64decode(ci_data["content"]).decode("utf-8-sig")
+        with open(os.path.join(target_dir, BD2_CHARINFO_FILENAME), "w", encoding="utf-8") as fh:
+            fh.write(charinfo_text)
 
-        # Build male character → spine directory list.
-        male_to_dirs: dict[str, list[str]] = {}
-        for char in rows if isinstance(rows, list) else []:
-            cn = str(char.get("charName") or "").strip()
-            if cn not in _BD2_MALE_CHARACTERS:
-                continue
-            dirs_for_char: list[str] = []
-            for costume in char.get("costumes") or []:
-                for key in ("spine", "cutscene", "censored_spine"):
-                    sid = str(costume.get(key) or "").strip()
-                    if sid:
-                        dirs_for_char.append(sid)
-            ps = char.get("prestigeSkin")
-            if isinstance(ps, dict):
-                sid = str(ps.get("spine") or "").strip()
-                if sid:
-                    dirs_for_char.append(sid)
-            male_to_dirs[cn] = dirs_for_char
+        female_dirs = _bd2_female_spine_dirs(charinfo_text)
+        if not female_dirs:
+            raise RuntimeError("No female spine directories found")
 
-        # 3. Delete male character spine directories from disk.
-        _BD2_DOWNLOAD_STATE["step"] = "deleting_male"
-        deleted = 0
-        for cn, dirs in male_to_dirs.items():
-            for d in dirs:
-                if d.startswith("cutscene_"):
-                    path = os.path.join(target_dir, "spine", "cutscenes", d)
-                elif d.startswith("illust_"):
-                    path = os.path.join(target_dir, "spine", "illust", d)
-                elif d.startswith("char"):
-                    path = os.path.join(target_dir, "spine", "char", d)
-                else:
-                    continue
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                    deleted += 1
-                elif os.path.isfile(path):
-                    os.remove(path)
-                    deleted += 1
+        # Build allowlist of ZIP entry prefixes to extract.
+        wanted: set[str] = {BD2_CHARINFO_FILENAME}
+        for d in female_dirs:
+            if d.startswith("cutscene_"):
+                wanted.add(f"spine/cutscenes/{d}")
+            elif d.startswith("illust_"):
+                wanted.add(f"spine/illust/{d}")
+            elif d.startswith("char"):
+                wanted.add(f"spine/char/{d}")
+
+        # 2. Stream zipball, extract only wanted entries.
+        _BD2_DOWNLOAD_STATE["step"] = "downloading"
+        _BD2_DOWNLOAD_STATE["total_dirs"] = len(female_dirs)
+        _BD2_DOWNLOAD_STATE["downloaded"] = 0
+
+        # Stream to temp file (codeload redirect doesn't support range requests).
+        zip_path = os.path.join(target_dir, "_repo.zip")
+        total_bytes = 0
+        try:
+            with _ur.urlopen(ZIP_URL, timeout=600) as resp:
+                with open(zip_path, "wb") as tmp:
+                    while True:
+                        if _BD2_DOWNLOAD_STATE.get("cancelled"):
+                            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+                            return
+                        chunk = resp.read(1 << 20)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+                        total_bytes += len(chunk)
+                        _BD2_DOWNLOAD_STATE["bytes"] = total_bytes
+                        _BD2_DOWNLOAD_STATE["mb"] = round(total_bytes / (1 << 20), 1)
+
+            # Extract only wanted entries.
+            _BD2_DOWNLOAD_STATE["step"] = "extracting"
+            prefix_len = 0
+            with _zf.ZipFile(zip_path) as zf:
+                for info in zf.infolist():
+                    if _BD2_DOWNLOAD_STATE.get("cancelled"):
+                        _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+                        return
+                    if prefix_len == 0 and "/" in info.filename:
+                        prefix_len = info.filename.index("/") + 1
+                    rel = info.filename[prefix_len:] if prefix_len else info.filename
+                    if info.is_dir():
+                        continue
+                    keep = any(rel == w or rel.startswith(w + "/") or rel.startswith(w + "\\") for w in wanted)
+                    if not keep:
+                        continue
+                    dest = os.path.join(target_dir, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with zf.open(info) as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        finally:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
 
         _BD2_DOWNLOAD_STATE["status"] = "done"
-        _BD2_DOWNLOAD_STATE["deleted_male_dirs"] = deleted
+        _BD2_DOWNLOAD_STATE["mb"] = round(total_bytes / (1 << 20), 1)
     except Exception as exc:
         _BD2_DOWNLOAD_STATE["status"] = "error"
         _BD2_DOWNLOAD_STATE["error"] = str(exc)
+        zip_path = os.path.join(target_dir, "_repo.zip")
+        if os.path.exists(zip_path):
+            try: os.remove(zip_path)
+            except Exception: pass
 
 
 @app.post("/bd2/spine/download")
