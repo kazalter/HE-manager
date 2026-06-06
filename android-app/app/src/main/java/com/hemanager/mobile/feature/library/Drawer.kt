@@ -246,6 +246,7 @@ internal fun AppDrawerV2(
     onRefresh: () -> Unit,
     onSettings: () -> Unit,
     onOpenCreators: () -> Unit,
+    onOpenBd2Spine: () -> Unit,
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -328,6 +329,12 @@ internal fun AppDrawerV2(
                             icon = Icons.Default.LocalOffer,
                             active = false,
                             onClick = onOpenCreators
+                        )
+                        DNavRow(
+                            cn = "BD2 动态", en = "Spine",
+                            icon = Icons.Default.GridView,
+                            active = false,
+                            onClick = onOpenBd2Spine
                         )
                         DNavRow(
                             cn = "文件夹", en = "Folders",
