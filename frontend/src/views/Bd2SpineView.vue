@@ -18,6 +18,14 @@ const downloadStatus = ref<'idle' | 'cloning' | 'done' | 'error'>('idle')
 const downloadError = ref('')
 let _downloadPollTimer: ReturnType<typeof setInterval> | null = null
 
+const cancelDownload = async () => {
+  try {
+    await axios.post(`${API_BASE_URL}/bd2/spine/download/cancel`)
+  } catch { /* ignore */ }
+  if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
+  downloadStatus.value = 'idle'
+}
+
 const startDownload = async () => {
   downloadStatus.value = 'cloning'
   downloadError.value = ''
@@ -32,6 +40,9 @@ const startDownload = async () => {
         const st = res.data.status as string
         if (st === 'done') {
           downloadStatus.value = 'done'
+          if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
+        } else if (st === 'cancelled') {
+          downloadStatus.value = 'idle'
           if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
         } else if (st === 'error') {
           downloadStatus.value = 'error'
@@ -237,12 +248,11 @@ watch(hideEffectLayers, () => applyEffectLayerFilter())
             : downloadStatus === 'error'
             ? 'border-red-400/25 bg-red-500/10 text-red-100'
             : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'"
-          :disabled="downloadStatus === 'cloning'"
-          @click="startDownload"
+          @click="downloadStatus === 'cloning' ? cancelDownload() : startDownload()"
         >
           <Loader2 v-if="downloadStatus === 'cloning'" :size="16" class="animate-spin" />
           <Download v-else :size="16" />
-          {{ downloadStatus === 'cloning' ? '下载中…' : downloadStatus === 'error' ? '重试' : '下载女性角色' }}
+          {{ downloadStatus === 'cloning' ? '下载中… 点击取消' : downloadStatus === 'error' ? '重试' : '下载女性角色' }}
         </button>
         <span v-if="downloadStatus === 'done'" class="text-xs text-green-300/70 font-bold">已下载</span>
         <span v-if="downloadStatus === 'error'" class="text-xs text-red-300/70 max-w-[180px] truncate" :title="downloadError">{{ downloadError }}</span>

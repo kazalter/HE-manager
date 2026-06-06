@@ -679,6 +679,14 @@ def bd2_download_status():
     return dict(_BD2_DOWNLOAD_STATE)
 
 
+@app.post("/bd2/spine/download/cancel")
+def bd2_download_cancel():
+    if _BD2_DOWNLOAD_STATE.get("status") != "cloning":
+        raise HTTPException(status_code=409, detail="No download in progress")
+    _BD2_DOWNLOAD_STATE["cancelled"] = True
+    return {"status": "cancelling"}
+
+
 @app.get("/bd2/spine/{kind}/{asset_id}/{filename}")
 def get_bd2_spine_file_by_kind(kind: str, asset_id: str, filename: str, db: Session = Depends(get_db)):
     if kind not in {"char", "cutscene", "illust"}:
@@ -766,6 +774,9 @@ def _bd2_run_download(target_dir: str) -> None:
         os.makedirs(target_dir, exist_ok=True)
 
         # 1. Clone or pull the repo (full shallow clone — ~11 GB).
+        if _BD2_DOWNLOAD_STATE.get("cancelled"):
+            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
+            return
         if os.path.isdir(os.path.join(target_dir, ".git")):
             _BD2_DOWNLOAD_STATE["step"] = "pulling"
             _sp.run(
