@@ -674,6 +674,11 @@ def list_bd2_spine_assets(db: Session = Depends(get_db)):
     return {"root": root, "assets": assets}
 
 
+@app.get("/bd2/spine/download/status")
+def bd2_download_status():
+    return dict(_BD2_DOWNLOAD_STATE)
+
+
 @app.get("/bd2/spine/{kind}/{asset_id}/{filename}")
 def get_bd2_spine_file_by_kind(kind: str, asset_id: str, filename: str, db: Session = Depends(get_db)):
     if kind not in {"char", "cutscene", "illust"}:
@@ -699,6 +704,155 @@ def _bd2_spine_file_response(asset_id: str, filename: str, *, kind: str, db: Ses
     if not os.path.exists(target) or not os.path.isfile(target):
         raise HTTPException(status_code=404, detail="Spine file not found")
     return FileResponse(target)
+
+
+# ---------------------------------------------------------------------------
+# BD2 Spine download — sparse git clone female-only assets from GitHub
+# ---------------------------------------------------------------------------
+
+_BD2_REPO_URL = "https://github.com/myssal/Brown-Dust-2-Asset.git"
+_BD2_DOWNLOAD_STATE: dict[str, object] = {}
+
+
+def _bd2_female_spine_dirs(char_info_json_text: str) -> list[str]:
+    """Parse CharInfo.json and return the list of female spine directories."""
+    import json as _json
+
+    text = char_info_json_text
+    text = re.sub(
+        r'("censored_spine"\s*:\s*"[^"]+")\s*("cutscene"\s*:)',
+        r"\1,\n        \2",
+        text,
+    )
+    rows = _json.loads(text)
+    dirs: list[str] = []
+
+    def _add(name: object) -> None:
+        if isinstance(name, str) and name.strip():
+            dirs.append(name.strip())
+
+    for char in rows if isinstance(rows, list) else []:
+        char_name = str(char.get("charName") or "").strip()
+        if char_name in _BD2_MALE_CHARACTERS:
+            continue
+        for costume in char.get("costumes") or []:
+            for key in ("spine", "cutscene", "censored_spine"):
+                _add(costume.get(key))
+        ps = char.get("prestigeSkin")
+        if isinstance(ps, dict):
+            _add(ps.get("spine"))
+        for src in ("guest", "prestigeSkin"):
+            obj = char.get(src)
+            if not isinstance(obj, dict):
+                continue
+            interact = obj.get("interact")
+            if isinstance(interact, str):
+                _add(interact)
+            elif isinstance(interact, list):
+                for item in interact:
+                    _add(item)
+    return dirs
+
+
+def _bd2_run_download(target_dir: str) -> None:
+    """Background task: shallow-clone BD2 repo and delete male character dirs."""
+    import subprocess as _sp
+
+    _BD2_DOWNLOAD_STATE["status"] = "cloning"
+    _BD2_DOWNLOAD_STATE["target"] = target_dir
+    _BD2_DOWNLOAD_STATE["error"] = None
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+
+        # 1. Clone or pull the repo (full shallow clone — ~11 GB).
+        if os.path.isdir(os.path.join(target_dir, ".git")):
+            _BD2_DOWNLOAD_STATE["step"] = "pulling"
+            _sp.run(
+                ["git", "-C", target_dir, "pull", "--depth", "1", "origin", "master"],
+                check=True, capture_output=True, text=True,
+            )
+        else:
+            _BD2_DOWNLOAD_STATE["step"] = "cloning"
+            _sp.run(
+                [
+                    "git", "clone", "--depth", "1", "--single-branch",
+                    _BD2_REPO_URL, target_dir,
+                ],
+                check=True, capture_output=True, text=True,
+            )
+
+        # 2. Read CharInfo.json to find male character spine directories.
+        _BD2_DOWNLOAD_STATE["step"] = "filtering"
+        charinfo_path = os.path.join(target_dir, BD2_CHARINFO_FILENAME)
+        with open(charinfo_path, encoding="utf-8-sig") as fh:
+            charinfo_text = fh.read()
+
+        # Re-parse CharInfo.json without filtering to get male dirs.
+        import json as _json
+        text = re.sub(
+            r'("censored_spine"\s*:\s*"[^"]+")\s*("cutscene"\s*:)',
+            r"\1,\n        \2", charinfo_text,
+        )
+        rows = _json.loads(text)
+
+        # Build male character → spine directory list.
+        male_to_dirs: dict[str, list[str]] = {}
+        for char in rows if isinstance(rows, list) else []:
+            cn = str(char.get("charName") or "").strip()
+            if cn not in _BD2_MALE_CHARACTERS:
+                continue
+            dirs_for_char: list[str] = []
+            for costume in char.get("costumes") or []:
+                for key in ("spine", "cutscene", "censored_spine"):
+                    sid = str(costume.get(key) or "").strip()
+                    if sid:
+                        dirs_for_char.append(sid)
+            ps = char.get("prestigeSkin")
+            if isinstance(ps, dict):
+                sid = str(ps.get("spine") or "").strip()
+                if sid:
+                    dirs_for_char.append(sid)
+            male_to_dirs[cn] = dirs_for_char
+
+        # 3. Delete male character spine directories from disk.
+        _BD2_DOWNLOAD_STATE["step"] = "deleting_male"
+        deleted = 0
+        for cn, dirs in male_to_dirs.items():
+            for d in dirs:
+                if d.startswith("cutscene_"):
+                    path = os.path.join(target_dir, "spine", "cutscenes", d)
+                elif d.startswith("illust_"):
+                    path = os.path.join(target_dir, "spine", "illust", d)
+                elif d.startswith("char"):
+                    path = os.path.join(target_dir, "spine", "char", d)
+                else:
+                    continue
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                    deleted += 1
+                elif os.path.isfile(path):
+                    os.remove(path)
+                    deleted += 1
+
+        _BD2_DOWNLOAD_STATE["status"] = "done"
+        _BD2_DOWNLOAD_STATE["deleted_male_dirs"] = deleted
+    except Exception as exc:
+        _BD2_DOWNLOAD_STATE["status"] = "error"
+        _BD2_DOWNLOAD_STATE["error"] = str(exc)
+
+
+@app.post("/bd2/spine/download")
+def bd2_download(payload: dict, background_tasks: BackgroundTasks):
+    target_dir = str(payload.get("target_dir") or "").strip()
+    if not target_dir:
+        raise HTTPException(status_code=400, detail="target_dir is required")
+    if _BD2_DOWNLOAD_STATE.get("status") == "cloning":
+        raise HTTPException(status_code=409, detail="Download already in progress")
+    _BD2_DOWNLOAD_STATE.clear()
+    background_tasks.add_task(_bd2_run_download, target_dir)
+    return {"status": "started", "target_dir": target_dir}
+
 
 DEFAULT_EXTERNAL_DOWNLOAD_DIR = os.path.join(os.getcwd(), "external_downloads")
 EXTERNAL_COVERS_DIR = os.path.abspath(os.path.join(os.getcwd(), "..", "covers"))

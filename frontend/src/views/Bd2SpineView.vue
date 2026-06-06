@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
-import { AlertCircle, Box, Film, Loader2, Play, RefreshCw, Sparkles } from 'lucide-vue-next'
+import { AlertCircle, Box, Download, Film, Loader2, Play, RefreshCw, Sparkles } from 'lucide-vue-next'
 import type { SpinePlayer as SpinePlayerInstance, SpinePlayerConfig } from '@esotericsoftware/spine-player'
 import '@esotericsoftware/spine-player/dist/spine-player.css'
 import { API_BASE_URL } from '../config'
@@ -12,6 +12,43 @@ const selectedId = ref('')
 const selectedKind = ref<'char' | 'cutscene'>('char')
 const hideEffectLayers = ref(false)
 const loading = ref(true)
+
+// BD2 download state
+const downloadStatus = ref<'idle' | 'cloning' | 'done' | 'error'>('idle')
+const downloadError = ref('')
+let _downloadPollTimer: ReturnType<typeof setInterval> | null = null
+
+const startDownload = async () => {
+  downloadStatus.value = 'cloning'
+  downloadError.value = ''
+  try {
+    await axios.post(`${API_BASE_URL}/bd2/spine/download`, {
+      target_dir: 'E:\\hhh\\BD2',
+    })
+    // Poll for completion
+    _downloadPollTimer = setInterval(async () => {
+      try {
+        const res = await axios.get(`${API_BASE_URL}/bd2/spine/download/status`)
+        const st = res.data.status as string
+        if (st === 'done') {
+          downloadStatus.value = 'done'
+          if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
+        } else if (st === 'error') {
+          downloadStatus.value = 'error'
+          downloadError.value = (res.data.error as string) || 'Unknown'
+          if (_downloadPollTimer) { clearInterval(_downloadPollTimer); _downloadPollTimer = null }
+        }
+      } catch { /* keep polling */ }
+    }, 2000)
+  } catch (err: unknown) {
+    downloadStatus.value = 'error'
+    downloadError.value = err instanceof Error ? err.message : 'Download failed'
+  }
+}
+
+onBeforeUnmount(() => {
+  if (_downloadPollTimer) clearInterval(_downloadPollTimer)
+})
 const playerLoading = ref(false)
 const error = ref('')
 const playerError = ref('')
@@ -191,13 +228,32 @@ watch(hideEffectLayers, () => applyEffectLayerFilter())
           测试 BD2 的 .skel / .atlas / texture 三件套。这里播放的是 Spine 动画数据，不是 Cubism Live2D。
         </p>
       </div>
-      <button
-        class="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-white/75 hover:bg-white/10 hover:text-white transition"
-        @click="loadAssets"
-      >
-        <RefreshCw :size="16" />
-        刷新
-      </button>
+      <div class="flex items-center gap-3">
+        <button
+          v-if="downloadStatus !== 'done'"
+          class="inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-bold transition"
+          :class="downloadStatus === 'cloning'
+            ? 'border-amber-300/35 bg-amber-300/12 text-amber-100 cursor-wait'
+            : downloadStatus === 'error'
+            ? 'border-red-400/25 bg-red-500/10 text-red-100'
+            : 'border-white/10 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'"
+          :disabled="downloadStatus === 'cloning'"
+          @click="startDownload"
+        >
+          <Loader2 v-if="downloadStatus === 'cloning'" :size="16" class="animate-spin" />
+          <Download v-else :size="16" />
+          {{ downloadStatus === 'cloning' ? '下载中…' : downloadStatus === 'error' ? '重试' : '下载女性角色' }}
+        </button>
+        <span v-if="downloadStatus === 'done'" class="text-xs text-green-300/70 font-bold">已下载</span>
+        <span v-if="downloadStatus === 'error'" class="text-xs text-red-300/70 max-w-[180px] truncate" :title="downloadError">{{ downloadError }}</span>
+        <button
+          class="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-white/75 hover:bg-white/10 hover:text-white transition"
+          @click="loadAssets"
+        >
+          <RefreshCw :size="16" />
+          刷新
+        </button>
+      </div>
     </header>
 
     <div v-if="error" class="flex items-center gap-3 rounded-xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
