@@ -601,6 +601,8 @@ private val FILTER_SOURCE_OPTS = listOf(
     FilterChipOpt("local", "本地"),
     FilterChipOpt("x", "X"),
     FilterChipOpt("wnacg", "wnacg"),
+    FilterChipOpt("asmr", "ASMR"),
+    FilterChipOpt("bd2", "BD2"),
 )
 private val FILTER_SORT_OPTS = listOf(
     FilterChipOpt("added", "最近添加", Icons.Default.Add),

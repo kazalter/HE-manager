@@ -304,7 +304,7 @@ internal fun LibraryScreenV2(
     var statusFilter by remember { mutableStateOf("") }
     // sourceFilter / sortFilter 来自 HE OP filter sheet 新增的两个分区。
     // sourceFilter 走客户端筛（MediaItem.sourceSite 字段，来自 backend Media.source_site）：
-    //   "all" → 不筛；"local" → sourceSite==null；其它 → sourceSite 精确匹配 ("x" / "wnacg" / "asmr")
+    //   "all" → 不筛；"local" → sourceSite==null；其它 → sourceSite 精确匹配 ("x" / "wnacg" / "asmr" / "bd2")
     // sortFilter 映射后端 /mobile/media?sort=...：added→date / opened→opened /
     //   rating→rating / name→name；后端不识别会 fallback 到 date。
     var sourceFilter by remember { mutableStateOf("all") }
