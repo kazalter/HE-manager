@@ -255,6 +255,24 @@ watch(hideEffectLayers, () => applyEffectLayerFilter())
             <p class="text-xs text-white/35 mt-1 truncate">{{ selectedAsset?.asset_id || sourceRoot || 'BD2 asset root not resolved' }}</p>
           </div>
           <div class="flex flex-wrap items-center gap-2 text-xs text-white/45">
+            <div class="inline-grid grid-cols-2 gap-1 rounded-lg border border-white/10 bg-white/[0.03] p-1">
+              <button
+                class="inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-bold transition"
+                :class="selectedKind === 'char' ? 'bg-white/[0.14] text-white' : 'text-white/50 hover:text-white/80'"
+                @click="selectedKind = 'char'"
+              >
+                <Box :size="13" />
+                角色 {{ charAssetCount }}
+              </button>
+              <button
+                class="inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-bold transition"
+                :class="selectedKind === 'cutscene' ? 'bg-white/[0.14] text-white' : 'text-white/50 hover:text-white/80'"
+                @click="selectedKind = 'cutscene'"
+              >
+                <Film :size="13" />
+                Cutscene {{ cutsceneAssetCount }}
+              </button>
+            </div>
             <button
               class="inline-flex items-center gap-2 rounded-lg border px-3 py-2 font-bold transition"
               :class="hideEffectLayers ? 'border-amber-300/35 bg-amber-300/12 text-amber-100' : 'border-white/10 bg-white/[0.04] text-white/55 hover:text-white/80'"
