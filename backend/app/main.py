@@ -783,17 +783,43 @@ def _bd2_run_download(target_dir: str) -> None:
             _BD2_DOWNLOAD_STATE["status"] = "cancelled"
             return
 
-        # 1. Fetch CharInfo.json via API.
+        # 1. Get CharInfo.json — cached > API > fallback.
         _BD2_DOWNLOAD_STATE["step"] = "fetching_charinfo"
-        ci_req = _ur.Request(
-            "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/contents/CharInfo(Dropped).json",
-            headers={"Accept": "application/vnd.github.v3+json"},
-        )
-        with _ur.urlopen(ci_req, timeout=30) as resp:
-            ci_data = _json.loads(resp.read().decode())
-        charinfo_text = _b64.b64decode(ci_data["content"]).decode("utf-8-sig")
-        with open(os.path.join(target_dir, BD2_CHARINFO_FILENAME), "w", encoding="utf-8") as fh:
-            fh.write(charinfo_text)
+        ci_local = os.path.join(target_dir, BD2_CHARINFO_FILENAME)
+        if os.path.exists(ci_local) and os.path.getsize(ci_local) > 1000:
+            with open(ci_local, encoding="utf-8-sig") as fh:
+                charinfo_text = fh.read()
+            _BD2_DOWNLOAD_STATE["charinfo_source"] = "cached"
+        else:
+            try:
+                ci_req = _ur.Request(
+                    "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/contents/CharInfo(Dropped).json",
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                )
+                with _ur.urlopen(ci_req, timeout=30) as resp:
+                    ci_data = _json.loads(resp.read().decode())
+                charinfo_text = _b64.b64decode(ci_data["content"]).decode("utf-8-sig")
+                _BD2_DOWNLOAD_STATE["charinfo_source"] = "api"
+            except Exception:
+                # Fallback: try the test repo or any existing BD2 asset root.
+                for src_dir in (
+                    os.getenv("HE_BD2_ASSET_ROOT", ""),
+                    r"C:\Users\25768\Desktop\HE_Project\Brown-Dust-2-Asset-test",
+                ):
+                    src = os.path.join(src_dir, BD2_CHARINFO_FILENAME) if src_dir else ""
+                    if src and os.path.exists(src):
+                        with open(src, encoding="utf-8-sig") as fh:
+                            charinfo_text = fh.read()
+                        _BD2_DOWNLOAD_STATE["charinfo_source"] = f"fallback:{src}"
+                        break
+                else:
+                    raise RuntimeError(
+                        "Cannot fetch CharInfo.json (API rate-limited) and no local copy found. "
+                        "Place CharInfo(Dropped).json in the target directory and retry."
+                    )
+            os.makedirs(os.path.dirname(ci_local), exist_ok=True)
+            with open(ci_local, "w", encoding="utf-8") as fh:
+                fh.write(charinfo_text)
 
         female_dirs = _bd2_female_spine_dirs(charinfo_text)
         if not female_dirs:
