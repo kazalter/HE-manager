@@ -167,10 +167,18 @@ def _bd2_asset_root(db: Session) -> str:
     raise HTTPException(status_code=404, detail="BD2 asset root not found")
 
 
-def _bd2_char_info(root: str) -> dict[str, dict[str, str]]:
+def _bd2_char_info(root: str) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    """Return (costume_meta, spine_to_char).
+
+    ``costume_meta`` maps costume_id → {char_name, costume_name, …} (unchanged).
+    ``spine_to_char`` maps every spine directory name (char, cutscene, illust)
+    to its owning character name for gender filtering.
+    """
     path = os.path.join(root, BD2_CHARINFO_FILENAME)
+    empty: dict[str, dict[str, str]] = {}
+    empty_map: dict[str, str] = {}
     if not os.path.exists(path):
-        return {}
+        return empty, empty_map
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
             text = file.read()
@@ -183,9 +191,10 @@ def _bd2_char_info(root: str) -> dict[str, dict[str, str]]:
         )
         rows = json.loads(text)
     except Exception:
-        return {}
+        return empty, empty_map
 
     out: dict[str, dict[str, str]] = {}
+    spine_to_char: dict[str, str] = {}
     for char in rows if isinstance(rows, list) else []:
         char_name = str(char.get("charName") or "").strip()
         for costume in char.get("costumes") or []:
@@ -197,10 +206,50 @@ def _bd2_char_info(root: str) -> dict[str, dict[str, str]]:
                 "costume_name": str(costume.get("costumeName") or "").strip(),
                 "release_date": str(costume.get("releaseDate") or "").strip(),
             }
-    return out
+            # Map spine / cutscene / censored_spine → char_name
+            for key in ("spine", "cutscene", "censored_spine"):
+                spine_id = str(costume.get(key) or "").strip()
+                if spine_id:
+                    spine_to_char[spine_id] = char_name
+        # prestigeSkin
+        ps = char.get("prestigeSkin")
+        if isinstance(ps, dict):
+            ps_spine = str(ps.get("spine") or "").strip()
+            if ps_spine:
+                spine_to_char[ps_spine] = char_name
+        # guest / prestigeSkin interact (illust_datingN, cutscene_…)
+        for src in ("guest", "prestigeSkin"):
+            obj = char.get(src)
+            if not isinstance(obj, dict):
+                continue
+            interact = obj.get("interact")
+            items: list[str] = []
+            if isinstance(interact, str):
+                items = [interact]
+            elif isinstance(interact, list):
+                items = [str(i) for i in interact if isinstance(i, str)]
+            for item in items:
+                item = item.strip()
+                if item:
+                    spine_to_char[item] = char_name
+    return out, spine_to_char
 
 
-def _bd2_spine_title(asset_id: str, char_info: dict[str, dict[str, str]], *, kind: str = "char") -> str:
+def _bd2_spine_title(
+    asset_id: str,
+    char_info: dict[str, dict[str, str]],
+    *,
+    kind: str = "char",
+    spine_to_char: dict[str, str] | None = None,
+) -> str:
+    # illust assets don't follow the charNNNNNN pattern; derive title from
+    # the spine_to_char mapping when available.
+    if kind == "illust":
+        char_name = (spine_to_char or {}).get(asset_id, "")
+        if char_name:
+            return f"Illust - {char_name} - {asset_id}"
+        return f"Illust - {asset_id}"
+
     clean_id = asset_id.removeprefix("cutscene_")
     match = re.match(r"char(\d{6})(?:_c)?$", clean_id)
     meta = char_info.get(match.group(1) if match else "")
@@ -217,7 +266,12 @@ def _bd2_spine_title(asset_id: str, char_info: dict[str, dict[str, str]], *, kin
 def _bd2_spine_dir(root: str, asset_id: str, *, kind: str = "char") -> str:
     if not re.fullmatch(r"[A-Za-z0-9_]+", asset_id or ""):
         raise HTTPException(status_code=400, detail="Invalid Spine asset id")
-    folder = "cutscenes" if kind == "cutscene" else "char"
+    if kind == "cutscene":
+        folder = "cutscenes"
+    elif kind == "illust":
+        folder = "illust"
+    else:
+        folder = "char"
     base = os.path.realpath(os.path.join(root, "spine", folder))
     target = os.path.realpath(os.path.join(base, asset_id))
     if not (target == base or target.startswith(base + os.sep)):
@@ -230,6 +284,7 @@ def _bd2_spine_dir(root: str, asset_id: str, *, kind: str = "char") -> str:
 def _bd2_collect_spine_assets(
     root: str,
     char_info: dict[str, dict[str, str]],
+    spine_to_char: dict[str, str],
     *,
     kind: str,
     folder: str,
@@ -243,6 +298,9 @@ def _bd2_collect_spine_assets(
         asset_dir = os.path.join(asset_root, name)
         if not os.path.isdir(asset_dir):
             continue
+        # Skip assets belonging to male characters.
+        if _bd2_skip_asset(name, spine_to_char):
+            continue
         files = sorted(
             filename
             for filename in os.listdir(asset_dir)
@@ -253,12 +311,17 @@ def _bd2_collect_spine_assets(
         textures = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
         if not skeleton or not atlas or not textures:
             continue
-        url_kind = "cutscene" if kind == "cutscene" else "char"
+        if kind == "cutscene":
+            url_kind = "cutscene"
+        elif kind == "illust":
+            url_kind = "illust"
+        else:
+            url_kind = "char"
         assets.append({
             "id": f"{kind}:{name}",
             "asset_id": name,
             "kind": kind,
-            "title": _bd2_spine_title(name, char_info, kind=kind),
+            "title": _bd2_spine_title(name, char_info, kind=kind, spine_to_char=spine_to_char),
             "skeleton": skeleton,
             "atlas": atlas,
             "textures": textures,
@@ -586,20 +649,34 @@ os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
 
 
+# Characters to exclude from BD2 Spine asset listing (male / non-target).
+_BD2_MALE_CHARACTERS: frozenset[str] = frozenset({
+    "Lathel", "Gray", "Olstein", "Alec", "Andrew", "Nartas", "Wiggle",
+    "Jayden", "Goblin Slayer", "Fred", "Gynt", "Carlson",
+})
+
+
+def _bd2_skip_asset(asset_id: str, spine_to_char: dict[str, str]) -> bool:
+    """Return True if *asset_id* belongs to a character in the male list."""
+    char_name = spine_to_char.get(asset_id, "")
+    return char_name in _BD2_MALE_CHARACTERS
+
+
 @app.get("/bd2/spine")
 def list_bd2_spine_assets(db: Session = Depends(get_db)):
     root = _bd2_asset_root(db)
-    char_info = _bd2_char_info(root)
+    char_info, spine_to_char = _bd2_char_info(root)
     assets = [
-        *_bd2_collect_spine_assets(root, char_info, kind="char", folder="char"),
-        *_bd2_collect_spine_assets(root, char_info, kind="cutscene", folder="cutscenes"),
+        *_bd2_collect_spine_assets(root, char_info, spine_to_char, kind="char", folder="char"),
+        *_bd2_collect_spine_assets(root, char_info, spine_to_char, kind="cutscene", folder="cutscenes"),
+        *_bd2_collect_spine_assets(root, char_info, spine_to_char, kind="illust", folder="illust"),
     ]
     return {"root": root, "assets": assets}
 
 
 @app.get("/bd2/spine/{kind}/{asset_id}/{filename}")
 def get_bd2_spine_file_by_kind(kind: str, asset_id: str, filename: str, db: Session = Depends(get_db)):
-    if kind not in {"char", "cutscene"}:
+    if kind not in {"char", "cutscene", "illust"}:
         raise HTTPException(status_code=400, detail="Invalid Spine asset kind")
     return _bd2_spine_file_response(asset_id, filename, kind=kind, db=db)
 
