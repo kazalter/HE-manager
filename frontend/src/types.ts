@@ -80,6 +80,8 @@ export interface Tag {
 
 export interface Bd2SpineAsset {
     id: string;
+    asset_id: string;
+    kind: 'char' | 'cutscene';
     title: string;
     skeleton: string;
     atlas: string;

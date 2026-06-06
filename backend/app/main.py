@@ -200,27 +200,72 @@ def _bd2_char_info(root: str) -> dict[str, dict[str, str]]:
     return out
 
 
-def _bd2_spine_title(asset_id: str, char_info: dict[str, dict[str, str]]) -> str:
-    match = re.match(r"char(\d{6})(?:_c)?$", asset_id)
+def _bd2_spine_title(asset_id: str, char_info: dict[str, dict[str, str]], *, kind: str = "char") -> str:
+    clean_id = asset_id.removeprefix("cutscene_")
+    match = re.match(r"char(\d{6})(?:_c)?$", clean_id)
     meta = char_info.get(match.group(1) if match else "")
     if not meta:
         return asset_id
     title = f"{meta.get('char_name') or 'Unknown'} - {meta.get('costume_name') or asset_id}"
-    if asset_id.endswith("_c"):
+    if clean_id.endswith("_c"):
         title += " (censored)"
+    if kind == "cutscene":
+        title = f"Cutscene - {title}"
     return title
 
 
-def _bd2_spine_dir(root: str, asset_id: str) -> str:
+def _bd2_spine_dir(root: str, asset_id: str, *, kind: str = "char") -> str:
     if not re.fullmatch(r"[A-Za-z0-9_]+", asset_id or ""):
         raise HTTPException(status_code=400, detail="Invalid Spine asset id")
-    base = os.path.realpath(os.path.join(root, "spine", "char"))
+    folder = "cutscenes" if kind == "cutscene" else "char"
+    base = os.path.realpath(os.path.join(root, "spine", folder))
     target = os.path.realpath(os.path.join(base, asset_id))
     if not (target == base or target.startswith(base + os.sep)):
         raise HTTPException(status_code=400, detail="Invalid Spine asset path")
     if not os.path.isdir(target):
         raise HTTPException(status_code=404, detail="Spine asset not found")
     return target
+
+
+def _bd2_collect_spine_assets(
+    root: str,
+    char_info: dict[str, dict[str, str]],
+    *,
+    kind: str,
+    folder: str,
+) -> list[dict]:
+    asset_root = os.path.join(root, "spine", folder)
+    if not os.path.isdir(asset_root):
+        return []
+
+    assets = []
+    for name in sorted(os.listdir(asset_root)):
+        asset_dir = os.path.join(asset_root, name)
+        if not os.path.isdir(asset_dir):
+            continue
+        files = sorted(
+            filename
+            for filename in os.listdir(asset_dir)
+            if os.path.isfile(os.path.join(asset_dir, filename))
+        )
+        skeleton = next((f for f in files if f.lower().endswith(".skel")), None)
+        atlas = next((f for f in files if f.lower().endswith(".atlas")), None)
+        textures = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+        if not skeleton or not atlas or not textures:
+            continue
+        url_kind = "cutscene" if kind == "cutscene" else "char"
+        assets.append({
+            "id": f"{kind}:{name}",
+            "asset_id": name,
+            "kind": kind,
+            "title": _bd2_spine_title(name, char_info, kind=kind),
+            "skeleton": skeleton,
+            "atlas": atlas,
+            "textures": textures,
+            "skeleton_url": f"/bd2/spine/{url_kind}/{name}/{skeleton}",
+            "atlas_url": f"/bd2/spine/{url_kind}/{name}/{atlas}",
+        })
+    return assets
 
 
 def scan_audio_tracks(item_dir: str) -> List[dict]:
@@ -544,42 +589,29 @@ app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails"
 @app.get("/bd2/spine")
 def list_bd2_spine_assets(db: Session = Depends(get_db)):
     root = _bd2_asset_root(db)
-    char_root = os.path.join(root, "spine", "char")
-    if not os.path.isdir(char_root):
-        return {"root": root, "assets": []}
-
     char_info = _bd2_char_info(root)
-    assets = []
-    for name in sorted(os.listdir(char_root)):
-        asset_dir = os.path.join(char_root, name)
-        if not os.path.isdir(asset_dir):
-            continue
-        files = sorted(
-            filename
-            for filename in os.listdir(asset_dir)
-            if os.path.isfile(os.path.join(asset_dir, filename))
-        )
-        skeleton = next((f for f in files if f.lower().endswith(".skel")), None)
-        atlas = next((f for f in files if f.lower().endswith(".atlas")), None)
-        textures = [f for f in files if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
-        if not skeleton or not atlas or not textures:
-            continue
-        assets.append({
-            "id": name,
-            "title": _bd2_spine_title(name, char_info),
-            "skeleton": skeleton,
-            "atlas": atlas,
-            "textures": textures,
-            "skeleton_url": f"/bd2/spine/{name}/{skeleton}",
-            "atlas_url": f"/bd2/spine/{name}/{atlas}",
-        })
+    assets = [
+        *_bd2_collect_spine_assets(root, char_info, kind="char", folder="char"),
+        *_bd2_collect_spine_assets(root, char_info, kind="cutscene", folder="cutscenes"),
+    ]
     return {"root": root, "assets": assets}
+
+
+@app.get("/bd2/spine/{kind}/{asset_id}/{filename}")
+def get_bd2_spine_file_by_kind(kind: str, asset_id: str, filename: str, db: Session = Depends(get_db)):
+    if kind not in {"char", "cutscene"}:
+        raise HTTPException(status_code=400, detail="Invalid Spine asset kind")
+    return _bd2_spine_file_response(asset_id, filename, kind=kind, db=db)
 
 
 @app.get("/bd2/spine/{asset_id}/{filename}")
 def get_bd2_spine_file(asset_id: str, filename: str, db: Session = Depends(get_db)):
+    return _bd2_spine_file_response(asset_id, filename, kind="char", db=db)
+
+
+def _bd2_spine_file_response(asset_id: str, filename: str, *, kind: str, db: Session):
     root = _bd2_asset_root(db)
-    asset_dir = _bd2_spine_dir(root, asset_id)
+    asset_dir = _bd2_spine_dir(root, asset_id, kind=kind)
     safe_name = os.path.basename(filename)
     if safe_name != filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
