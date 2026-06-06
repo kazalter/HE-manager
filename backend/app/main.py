@@ -333,6 +333,59 @@ def _bd2_collect_spine_assets(
     return assets
 
 
+def _bd2_spine_signed_byte_mojibake_name(name: str) -> str:
+    """Mirror spine-core 4.1's signed-byte binary string bug for atlas aliases."""
+    return "".join(
+        chr(byte) if byte < 0x80 else chr(0xFF00 + byte)
+        for byte in name.encode("utf-8")
+    )
+
+
+def _bd2_atlas_with_spine41_aliases(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    names = {line.rstrip("\r\n") for line in lines if line.strip() and ":" not in line}
+    out: list[str] = []
+    in_page = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        name = line.rstrip("\r\n")
+        if not name.strip():
+            out.append(line)
+            in_page = False
+            i += 1
+            continue
+        if ":" in name:
+            out.append(line)
+            i += 1
+            continue
+        if not in_page:
+            out.append(line)
+            in_page = True
+            i += 1
+            continue
+
+        block: list[str] = []
+        j = i + 1
+        while j < len(lines):
+            next_name = lines[j].rstrip("\r\n")
+            if not next_name.strip() or ":" not in next_name:
+                break
+            block.append(lines[j])
+            j += 1
+        out.append(line)
+        out.extend(block)
+
+        alias = _bd2_spine_signed_byte_mojibake_name(name)
+        if alias != name and alias not in names:
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            out.append(f"{alias}{newline}")
+            out.extend(block)
+            names.add(alias)
+        i = j
+    return "".join(out)
+
+
 def scan_audio_tracks(item_dir: str) -> List[dict]:
     """Walk an ASMR work folder and return tracks in stable display order.
 
@@ -722,6 +775,13 @@ def _bd2_spine_file_response(asset_id: str, filename: str, *, kind: str, db: Ses
         raise HTTPException(status_code=400, detail="Invalid file path")
     if not os.path.exists(target) or not os.path.isfile(target):
         raise HTTPException(status_code=404, detail="Spine file not found")
+    if safe_name.lower().endswith(".atlas"):
+        with open(target, "r", encoding="utf-8", errors="replace") as file:
+            atlas_text = file.read()
+        return Response(
+            content=_bd2_atlas_with_spine41_aliases(atlas_text),
+            media_type="text/plain; charset=utf-8",
+        )
     return FileResponse(target)
 
 

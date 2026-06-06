@@ -99,6 +99,32 @@ class Bd2SparsePathsTest(unittest.TestCase):
         self.assertEqual(len(paths), 5)
 
 
+class Bd2AtlasAliasTest(unittest.TestCase):
+    def test_non_ascii_region_gets_spine41_signed_byte_alias(self):
+        atlas = """char000206.png
+size:2048,2048
+format:RGBA8888
+other_수위_nostick
+bounds:429,2,233,216
+rotate:90
+shoulder(R)
+bounds:218,852,69,76
+"""
+        patched = main_mod._bd2_atlas_with_spine41_aliases(atlas)
+        self.assertIn("other_수위_nostick\nbounds:429,2,233,216", patched)
+        self.assertIn("other_￬ﾈﾘ￬ﾜﾄ_nostick\nbounds:429,2,233,216", patched)
+        self.assertEqual(patched.count("shoulder(R)"), 1)
+
+    def test_ascii_regions_are_left_alone(self):
+        atlas = """char000001.png
+size:128,128
+body
+bounds:0,0,64,64
+"""
+        patched = main_mod._bd2_atlas_with_spine41_aliases(atlas)
+        self.assertEqual(patched, atlas)
+
+
 class Bd2ProgressRegexTest(unittest.TestCase):
     def test_receiving_objects_line(self):
         main_mod._BD2_DOWNLOAD_STATE.clear()
