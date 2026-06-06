@@ -551,17 +551,27 @@ class MainActivity : ComponentActivity() {
             var showCreators by androidx.compose.runtime.saveable.rememberSaveable {
                 mutableStateOf(false)
             }
+            var showBd2Spine by androidx.compose.runtime.saveable.rememberSaveable {
+                mutableStateOf(false)
+            }
             if (showCreators) {
                 CreatorsScreen(
                     serverUrl = serverUrl,
                     token = token,
                     onBack = { showCreators = false }
                 )
+            } else if (showBd2Spine) {
+                com.hemanager.mobile.feature.bd2.Bd2SpineScreen(
+                    serverUrl = serverUrl,
+                    token = token,
+                    onBack = { showBd2Spine = false }
+                )
             } else {
                 LibraryScreenV2(
                     serverUrl = serverUrl,
                     token = token,
                     onOpenCreators = { showCreators = true },
+                    onOpenBd2Spine = { showBd2Spine = true },
                     onLogout = {
                         prefs.clearToken()
                         token = ""
