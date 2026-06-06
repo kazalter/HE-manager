@@ -765,9 +765,8 @@ def _bd2_female_spine_dirs(char_info_json_text: str) -> list[str]:
 def _bd2_run_download(target_dir: str) -> None:
     """Background task: download female BD2 Spine assets via GitHub ZIP.
 
-    Downloads the repo zipball from codeload.github.com and selectively
-    extracts only female character spine directories on the fly — one
-    HTTP request, no git clone, no API rate limits.
+    Downloads the repo zipball with resume support (.part file) and skips
+    already-extracted files.  No git clone, no API rate limits.
     """
     import urllib.request as _ur
     import base64 as _b64, json as _json, zipfile as _zf
@@ -780,12 +779,11 @@ def _bd2_run_download(target_dir: str) -> None:
 
     try:
         os.makedirs(target_dir, exist_ok=True)
-
         if _BD2_DOWNLOAD_STATE.get("cancelled"):
             _BD2_DOWNLOAD_STATE["status"] = "cancelled"
             return
 
-        # 1. Fetch CharInfo.json via API to build the female allowlist.
+        # 1. Fetch CharInfo.json via API.
         _BD2_DOWNLOAD_STATE["step"] = "fetching_charinfo"
         ci_req = _ur.Request(
             "https://api.github.com/repos/myssal/Brown-Dust-2-Asset/contents/CharInfo(Dropped).json",
@@ -801,7 +799,6 @@ def _bd2_run_download(target_dir: str) -> None:
         if not female_dirs:
             raise RuntimeError("No female spine directories found")
 
-        # Build allowlist of ZIP entry prefixes to extract.
         wanted: set[str] = {BD2_CHARINFO_FILENAME}
         for d in female_dirs:
             if d.startswith("cutscene_"):
@@ -811,20 +808,69 @@ def _bd2_run_download(target_dir: str) -> None:
             elif d.startswith("char"):
                 wanted.add(f"spine/char/{d}")
 
-        # 2. Stream zipball, extract only wanted entries.
+        # 2. Download the zipball with resume support.
         _BD2_DOWNLOAD_STATE["step"] = "downloading"
         _BD2_DOWNLOAD_STATE["total_dirs"] = len(female_dirs)
-        _BD2_DOWNLOAD_STATE["downloaded"] = 0
 
-        # Stream to temp file (codeload redirect doesn't support range requests).
         zip_path = os.path.join(target_dir, "_repo.zip")
+        part_path = zip_path + ".part"
         total_bytes = 0
+
+        # Check for partial download to resume.
+        existing_size = 0
+        if os.path.exists(part_path):
+            existing_size = os.path.getsize(part_path)
+
+        # Probe remote size.
+        remote_size: int | None = None
         try:
+            head_req = _ur.Request(ZIP_URL, method="HEAD")
+            with _ur.urlopen(head_req, timeout=15) as hr:
+                cl = hr.headers.get("Content-Length")
+                if cl:
+                    remote_size = int(cl)
+        except Exception:
+            pass  # can't probe, download from scratch
+
+        if existing_size > 0:
+            # If we already have the complete file, skip download.
+            if remote_size and existing_size >= remote_size:
+                os.rename(part_path, zip_path)
+                _BD2_DOWNLOAD_STATE["mb"] = round(existing_size / (1 << 20), 1)
+                _BD2_DOWNLOAD_STATE["step"] = "extracting"
+            elif remote_size and existing_size < remote_size:
+                # Try resume with Range header.
+                range_req = _ur.Request(ZIP_URL, headers={"Range": f"bytes={existing_size}-"})
+                try:
+                    with _ur.urlopen(range_req, timeout=30) as rr:
+                        if rr.status == 206:  # Partial Content
+                            with open(part_path, "ab") as tmp:
+                                while True:
+                                    if _BD2_DOWNLOAD_STATE.get("cancelled"):
+                                        return
+                                    chunk = rr.read(1 << 20)
+                                    if not chunk:
+                                        break
+                                    tmp.write(chunk)
+                                    existing_size += len(chunk)
+                                    _BD2_DOWNLOAD_STATE["bytes"] = existing_size
+                                    _BD2_DOWNLOAD_STATE["mb"] = round(existing_size / (1 << 20), 1)
+                            os.rename(part_path, zip_path)
+                            _BD2_DOWNLOAD_STATE["step"] = "extracting"
+                        else:
+                            raise Exception(f"Range not supported (status {rr.status})")
+                except Exception:
+                    # Range failed — restart download from scratch.
+                    os.remove(part_path)
+                    existing_size = 0
+
+        # Full download if no resume.
+        if existing_size == 0 and _BD2_DOWNLOAD_STATE.get("step") != "extracting":
             with _ur.urlopen(ZIP_URL, timeout=600) as resp:
-                with open(zip_path, "wb") as tmp:
+                total_bytes = 0
+                with open(part_path, "wb") as tmp:
                     while True:
                         if _BD2_DOWNLOAD_STATE.get("cancelled"):
-                            _BD2_DOWNLOAD_STATE["status"] = "cancelled"
                             return
                         chunk = resp.read(1 << 20)
                         if not chunk:
@@ -833,40 +879,57 @@ def _bd2_run_download(target_dir: str) -> None:
                         total_bytes += len(chunk)
                         _BD2_DOWNLOAD_STATE["bytes"] = total_bytes
                         _BD2_DOWNLOAD_STATE["mb"] = round(total_bytes / (1 << 20), 1)
-
-            # Extract only wanted entries.
+            os.rename(part_path, zip_path)
             _BD2_DOWNLOAD_STATE["step"] = "extracting"
-            prefix_len = 0
-            with _zf.ZipFile(zip_path) as zf:
-                for info in zf.infolist():
-                    if _BD2_DOWNLOAD_STATE.get("cancelled"):
-                        _BD2_DOWNLOAD_STATE["status"] = "cancelled"
-                        return
-                    if prefix_len == 0 and "/" in info.filename:
-                        prefix_len = info.filename.index("/") + 1
-                    rel = info.filename[prefix_len:] if prefix_len else info.filename
-                    if info.is_dir():
-                        continue
-                    keep = any(rel == w or rel.startswith(w + "/") or rel.startswith(w + "\\") for w in wanted)
-                    if not keep:
-                        continue
-                    dest = os.path.join(target_dir, rel)
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with zf.open(info) as src, open(dest, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-        finally:
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
+
+        # 3. Extract only wanted entries, skipping files that already exist.
+        _BD2_DOWNLOAD_STATE["step"] = "extracting"
+        extracted = 0
+        skipped = 0
+        prefix_len = 0
+        with _zf.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                if _BD2_DOWNLOAD_STATE.get("cancelled"):
+                    return
+                if prefix_len == 0 and "/" in info.filename:
+                    prefix_len = info.filename.index("/") + 1
+                rel = info.filename[prefix_len:] if prefix_len else info.filename
+                if info.is_dir():
+                    continue
+                if not any(rel == w or rel.startswith(w + "/") or rel.startswith(w + "\\") for w in wanted):
+                    continue
+                dest = os.path.join(target_dir, rel)
+                if os.path.exists(dest) and os.path.getsize(dest) == info.file_size:
+                    skipped += 1
+                    continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(info) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                extracted += 1
+
+        # Clean up.
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        if os.path.exists(part_path):
+            os.remove(part_path)
 
         _BD2_DOWNLOAD_STATE["status"] = "done"
-        _BD2_DOWNLOAD_STATE["mb"] = round(total_bytes / (1 << 20), 1)
+        _BD2_DOWNLOAD_STATE["extracted"] = extracted
+        _BD2_DOWNLOAD_STATE["skipped"] = skipped
     except Exception as exc:
         _BD2_DOWNLOAD_STATE["status"] = "error"
         _BD2_DOWNLOAD_STATE["error"] = str(exc)
+        # Keep .part file for resume on retry; only remove if cancelled.
+        if _BD2_DOWNLOAD_STATE.get("cancelled"):
+            for p in (zip_path, part_path):
+                try: os.remove(p)
+                except Exception: pass
         zip_path = os.path.join(target_dir, "_repo.zip")
-        if os.path.exists(zip_path):
-            try: os.remove(zip_path)
-            except Exception: pass
+        part_path = zip_path + ".part"
+        for p in (zip_path, part_path):
+            if os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
 
 
 @app.post("/bd2/spine/download")
