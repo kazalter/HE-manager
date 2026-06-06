@@ -129,6 +129,7 @@ const mountPlayer = async () => {
     showControls: true,
     showLoading: true,
     alpha: true,
+    premultipliedAlpha: false,
     backgroundColor: '00000000',
     fullScreenBackgroundColor: '101216',
     viewport: {
