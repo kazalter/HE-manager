@@ -30,6 +30,10 @@ SAMPLE_CHARINFO = """
   {
     "charName": "Lathel",
     "costumes": [{"spine": "char9999"}]
+  },
+  {
+    "charName": "Kry",
+    "costumes": [{"spine": "char8888"}]
   }
 ]
 """
@@ -70,8 +74,9 @@ class Bd2CharInfoParseTest(unittest.TestCase):
         )
 
     def test_male_characters_filtered_out(self):
-        # Lathel is in _BD2_MALE_CHARACTERS — his char9999 spine must drop.
+        # Lathel and Kry are in _BD2_MALE_CHARACTERS, so their spines must drop.
         self.assertNotIn("char9999", main_mod._bd2_female_spine_dirs(SAMPLE_CHARINFO))
+        self.assertNotIn("char8888", main_mod._bd2_female_spine_dirs(SAMPLE_CHARINFO))
 
     def test_malformed_json_is_patched(self):
         # Without the regex fix this would raise json.JSONDecodeError.

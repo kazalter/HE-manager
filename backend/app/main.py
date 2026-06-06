@@ -706,7 +706,7 @@ app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails"
 
 # Characters to exclude from BD2 Spine asset listing (male / non-target).
 _BD2_MALE_CHARACTERS: frozenset[str] = frozenset({
-    "Lathel", "Gray", "Olstein", "Alec", "Andrew", "Nartas", "Wiggle",
+    "Lathel", "Gray", "Olstein", "Alec", "Andrew", "Nartas", "Wiggle", "Kry",
     "Jayden", "Goblin Slayer", "Fred", "Gynt", "Carlson",
 })
 
