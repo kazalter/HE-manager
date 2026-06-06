@@ -64,32 +64,37 @@ const mountPlayer = async () => {
     return
   }
 
-  const config: SpinePlayerConfig = {
-    skeleton: assetUrl(asset.skeleton_url),
-    atlas: assetUrl(asset.atlas_url),
+  const config = {
+    binaryUrl: assetUrl(asset.skeleton_url),
+    atlasUrl: assetUrl(asset.atlas_url),
     showControls: true,
     showLoading: true,
     alpha: true,
     backgroundColor: '00000000',
     fullScreenBackgroundColor: '101216',
-    preserveDrawingBuffer: false,
     viewport: {
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
       padLeft: '8%',
       padRight: '8%',
       padTop: '8%',
       padBottom: '8%',
+      debugRender: false,
       transitionTime: 0.2,
+      animations: {},
     },
-    success: (nextPlayer) => {
+    success: (nextPlayer: SpinePlayerInstance) => {
       playerLoading.value = false
-      animationNames.value = nextPlayer.skeleton?.data.animations.map((animation) => animation.name) || []
-      skinNames.value = nextPlayer.skeleton?.data.skins.map((skin) => skin.name) || []
+      animationNames.value = nextPlayer.skeleton?.data.animations.map((animation: { name: string }) => animation.name) || []
+      skinNames.value = nextPlayer.skeleton?.data.skins.map((skin: { name: string }) => skin.name) || []
     },
-    error: (_nextPlayer, message) => {
+    error: (_nextPlayer: SpinePlayerInstance, message: string) => {
       playerLoading.value = false
       playerError.value = message || 'Spine 播放器加载失败'
     },
-  }
+  } as unknown as SpinePlayerConfig
 
   try {
     const { SpinePlayer } = await import('@esotericsoftware/spine-player')

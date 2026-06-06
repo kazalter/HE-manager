@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@esotericsoftware/spine-player": "^4.3.7",
+    "@esotericsoftware/spine-player": "4.1.11",
     "artplayer": "^5.4.0",
     "artplayer-plugin-vtt-thumbnail": "^1.1.0",
     "autoprefixer": "^10.5.0",
@@ -29,5 +29,9 @@
     "typescript": "~6.0.2",
     "vite": "^8.0.4",
     "vue-tsc": "^3.2.6"
+  },
+  "overrides": {
+    "@esotericsoftware/spine-core": "4.1.11",
+    "@esotericsoftware/spine-webgl": "4.1.11"
   }
 }
