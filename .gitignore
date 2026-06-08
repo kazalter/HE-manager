@@ -63,6 +63,9 @@ backend/app/library.recover.err
 # (ExternalFavoriteItem.cover_url) + the cover_path on Media rows.
 covers/
 
+# --- Deploy credentials -----------------------------------------------------
+.env
+
 # --- Claude Code working dir ------------------------------------------------
 .claude/
 
