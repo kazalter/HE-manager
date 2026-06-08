@@ -1381,7 +1381,12 @@ ADMIN_EXACT_PATHS = {
 
 
 def _public_path(path: str) -> bool:
-    return path in PUBLIC_PATHS or path.startswith("/bd2/spine")
+    if path in PUBLIC_PATHS or path.startswith("/bd2/spine"):
+        return True
+    # Allow loading frontend SPA page and assets without auth (WebView access)
+    if path in {"/", "/index.html", "/favicon.ico"} or path.startswith("/assets/"):
+        return True
+    return False
 
 
 def _admin_path(method: str, path: str) -> bool:
@@ -4909,3 +4914,10 @@ def push_wnacg_to_downloader(payload: schemas.ExternalDownloadRequest, db: Sessi
         return item_dir, files
 
     return _push_external_items(payload, db, build)
+
+
+# Mount frontend build directory (SPA) at the root
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+if os.path.isdir(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+
