@@ -71,15 +71,7 @@ logs/
 *.log
 *.hprof
 
-# --- Android build artifacts ------------------------------------------------
-# Every gradle build mutates these. Before this .gitignore they were tracked
-# and showed up as ~1500 modified files on every git status. Source of truth
-# is android-app/app/src and android-app/app/build.gradle.
-android-app/.gradle/
-android-app/build/
-android-app/app/build/
-android-app/.idea/
-android-app/local.properties
+
 
 # --- IDE / editor state -----------------------------------------------------
 .vscode/
