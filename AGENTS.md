@@ -54,6 +54,13 @@
 后来用 `git reset --soft HEAD~1` + 手动剔除 hunk + 重新 commit（`3a672ed`）才修复，完整复盘
 见本会话历史（5/24）。
 
+## ⚠️ 部署与环境修改规则
+
+- **改动环境目标**：当用户要求“修改后端”或“修改网页前端（如 EmbedSpine 等）”时，若未特别指明，默认都是指**修改并部署到 Linux 服务器（192.168.50.1）上的 Docker 化服务**。
+  - 需要在本地 Windows 对应仓库中修改代码，如涉及前端需本地执行 `npm run build` 编译。
+  - 之后利用 Python SFTP/SSH 脚本（如 paramiko）将修改后的文件（或编译后的 `dist/` 目录）上传并覆盖到 Linux 服务器上的 `/opt/stacks/he-manager/` 对应路径。
+  - 上传完成后，需通过 SSH 执行 `cd /opt/stacks/he-manager && docker compose restart` 重新启动容器使其生效。
+
 ## 跑 / 构建 / 测试
 
 - **Web 栈启动**：两个脚本，逻辑都在 `he.ps1`。
