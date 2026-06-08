@@ -1381,10 +1381,11 @@ ADMIN_EXACT_PATHS = {
 
 
 def _public_path(path: str) -> bool:
-    if path in PUBLIC_PATHS or path.startswith("/bd2/spine"):
+    norm = path[4:] if path.startswith("/api/") else path
+    if norm in PUBLIC_PATHS or norm.startswith("/bd2/spine") or norm.startswith("/bd2/characters"):
         return True
     # Allow loading frontend SPA page and assets without auth (WebView access)
-    if path in {"/", "/index.html", "/favicon.ico"} or path.startswith("/assets/"):
+    if norm in {"/", "/index.html", "/favicon.ico"} or norm.startswith("/assets/"):
         return True
     return False
 
