@@ -1416,6 +1416,7 @@ async def require_authenticated_request(request: Request, call_next):
             query_token=request.query_params.get("token"),
         )
         if not raw_token:
+            print(f"*** AUTH INTERCEPTED: {request.method} {path} (query: {request.query_params})")
             return _json_error(401, "Missing access token")
 
         db = database.SessionLocal()
