@@ -49,6 +49,7 @@ def _request(
     extra_headers: Optional[dict] = None,
     retries: int = _FETCH_RETRIES,
     raise_on_status: bool = True,
+    proxy: Optional[str] = None,
 ):
     """Perform a GET/HEAD with browser TLS impersonation, retrying past
     Cloudflare's intermittent 403/connection-reset and swapping fingerprint
@@ -78,7 +79,7 @@ def _request(
                     headers=headers,
                     timeout=timeout,
                     impersonate=impersonate,
-                    proxies=_proxies(),
+                    proxies={"http": proxy, "https": proxy} if proxy else _proxies(),
                 )
             except Exception as exc:  # network reset / TLS abort -> retry
                 last_exc = exc
@@ -274,13 +275,14 @@ def html_has_next_page(html: str) -> bool:
     return ">後頁" in html or ">后页" in html or ">下一页" in html
 
 
-def fetch_html(url: str, cookie: str, timeout: Optional[int] = None) -> str:
+def fetch_html(url: str, cookie: str, timeout: Optional[int] = None, proxy: Optional[str] = None) -> str:
     response = _request(
         url,
         cookie=cookie,
         accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         referer=WNACG_BASE_URL,
         timeout=timeout or _FETCH_TIMEOUT_SECONDS,
+        proxy=proxy,
     )
     raw = response.content
     content_type = response.headers.get("Content-Type", "")
@@ -289,13 +291,14 @@ def fetch_html(url: str, cookie: str, timeout: Optional[int] = None) -> str:
     return raw.decode(encoding, errors="replace")
 
 
-def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: Optional[int] = None) -> tuple[bytes, str]:
+def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: Optional[int] = None, proxy: Optional[str] = None) -> tuple[bytes, str]:
     response = _request(
         url,
         cookie=cookie,
         accept="image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
         referer=referer,
         timeout=timeout or _FETCH_TIMEOUT_SECONDS,
+        proxy=proxy,
     )
     return response.content, response.headers.get("Content-Type", "application/octet-stream")
 
@@ -312,7 +315,7 @@ def _content_length_from_headers(headers) -> Optional[int]:
     return None
 
 
-def fetch_content_length(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: int = 10) -> Optional[int]:
+def fetch_content_length(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: int = 10, proxy: Optional[str] = None) -> Optional[int]:
     accept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
     for method in ("HEAD", "GET"):
         extra = {"Range": "bytes=0-0"} if method == "GET" else None
@@ -329,6 +332,7 @@ def fetch_content_length(url: str, cookie: str, referer: str = WNACG_BASE_URL, t
                 extra_headers=extra,
                 retries=2,
                 raise_on_status=False,
+                proxy=proxy,
             )
             length = _content_length_from_headers(response.headers)
             if length is not None:

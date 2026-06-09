@@ -145,7 +145,7 @@ class ExternalSourcesTest(unittest.TestCase):
 
             calls = []
 
-            def fake_fetch_html(url, cookie):
+            def fake_fetch_html(url, cookie, **kwargs):
                 calls.append(url)
                 if url == external_sources.WNACG_DEFAULT_URL:
                     return '<a href="/users-users_fav-c-7.html">默认</a>'

@@ -10,6 +10,7 @@ const props = defineProps<{
   sourceId: number | null
   enabled: boolean
   intervalHours: number
+  proxy: string | null
   lastRunAt: string | null
   nextRunAt: string | null
   lastStatus: string | null
@@ -19,8 +20,20 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'update', payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }): void
+  (e: 'update', payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number; proxy?: string | null }): void
 }>()
+
+const localProxy = ref(props.proxy || '')
+watch(() => props.proxy, (newVal) => {
+  localProxy.value = newVal || ''
+})
+
+const handleProxyBlur = () => {
+  const finalVal = localProxy.value.trim() || null
+  if (finalVal !== props.proxy) {
+    emit('update', { proxy: finalVal })
+  }
+}
 
 const triggering = ref(false)
 const triggerError = ref('')
@@ -196,6 +209,22 @@ watch(() => props.sourceId, () => {
           ]"
         />
       </button>
+    </div>
+
+    <!-- Proxy Input -->
+    <div class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-xs text-white/45">代理服务器</span>
+        <span class="text-[10px] text-white/25">例如 http://127.0.0.1:7890</span>
+      </div>
+      <input
+        v-model="localProxy"
+        @blur="handleProxyBlur"
+        @keyup.enter="handleProxyBlur"
+        type="text"
+        placeholder="直连 (不使用代理)"
+        class="w-full bg-black/20 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent/50 placeholder-white/20"
+      />
     </div>
 
     <!-- Config (when enabled or has history) -->

@@ -284,7 +284,7 @@ def _parse_media(payload: dict) -> List[TweetMedia]:
     return out
 
 
-def _graphql_get(url: str, headers: dict, timeout: int, *, what: str) -> bytes:
+def _graphql_get(url: str, headers: dict, timeout: int, *, what: str, proxy: Optional[str] = None) -> bytes:
     """GET via curl_cffi with Chrome 124 TLS/HTTP2 fingerprint.
 
     Cloudflare drops Python's stdlib TLS handshake, surfacing as SSL UNEXPECTED_EOF.
@@ -292,6 +292,7 @@ def _graphql_get(url: str, headers: dict, timeout: int, *, what: str) -> bytes:
     framework-agnostic."""
     network_errors: List[str] = []
     response = None
+    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
     for impersonate, keep_user_agent in GRAPHQL_IMPERSONATIONS:
         request_headers = dict(headers)
         if not keep_user_agent:
@@ -303,6 +304,7 @@ def _graphql_get(url: str, headers: dict, timeout: int, *, what: str) -> bytes:
                 timeout=timeout,
                 impersonate=impersonate,
                 allow_redirects=True,
+                proxies=proxies_dict,
             )
             break
         except CffiRequestException as exc:
@@ -326,7 +328,7 @@ def _graphql_get(url: str, headers: dict, timeout: int, *, what: str) -> bytes:
     raise TweetTransientError(f"{what} HTTP {code}")
 
 
-def _fetch_via_graphql(tweet_id: str, cookie: str, timeout: int) -> TweetData:
+def _fetch_via_graphql(tweet_id: str, cookie: str, timeout: int, proxy: Optional[str] = None) -> TweetData:
     """Authenticated path: GraphQL TweetResultByRestId. Honors session cookie so adult/age-gated
     content is visible (the syndication endpoint always treats requesters as anonymous and
     hides those tweets regardless of the cookie that's attached)."""
@@ -360,7 +362,7 @@ def _fetch_via_graphql(tweet_id: str, cookie: str, timeout: int) -> TweetData:
         "Origin": "https://x.com",
     }
 
-    raw = _graphql_get(url, headers, timeout, what=f"Tweet {tweet_id}")
+    raw = _graphql_get(url, headers, timeout, what=f"Tweet {tweet_id}", proxy=proxy)
 
     try:
         body = json.loads(raw.decode("utf-8", errors="replace"))
@@ -408,11 +410,11 @@ def _fetch_via_graphql(tweet_id: str, cookie: str, timeout: int) -> TweetData:
     )
 
 
-def fetch_tweet(tweet_id: str, *, cookie: Optional[str] = None, timeout: int = 20) -> TweetData:
+def fetch_tweet(tweet_id: str, *, cookie: Optional[str] = None, timeout: int = 20, proxy: Optional[str] = None) -> TweetData:
     """Fetch tweet metadata. With cookie: authenticated GraphQL (sees adult content).
     Without cookie: public syndication endpoint (anonymous, hides age-gated tweets)."""
     if cookie:
-        return _fetch_via_graphql(tweet_id, cookie, timeout)
+        return _fetch_via_graphql(tweet_id, cookie, timeout, proxy=proxy)
 
     params = urlencode({"id": tweet_id, "lang": "en", "token": _derive_token(tweet_id)})
     url = f"{SYNDICATION_BASE}?{params}"
@@ -425,8 +427,14 @@ def fetch_tweet(tweet_id: str, *, cookie: Optional[str] = None, timeout: int = 2
     request = Request(url, headers=headers)
 
     try:
-        with urlopen(request, timeout=timeout) as response:
-            raw = response.read()
+        if proxy:
+            from urllib.request import build_opener, ProxyHandler
+            opener = build_opener(ProxyHandler({"http": proxy, "https": proxy}))
+            with opener.open(request, timeout=timeout) as response:
+                raw = response.read()
+        else:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read()
     except HTTPError as exc:
         if exc.code in (404, 403, 410):
             raise TweetUnavailable(f"Tweet {tweet_id} unavailable (HTTP {exc.code})") from exc
@@ -470,6 +478,7 @@ def fetch_likes_page(
     cursor: Optional[str] = None,
     count: int = 20,
     timeout: int = 30,
+    proxy: Optional[str] = None,
 ) -> Tuple[List[LikedTweet], Optional[str]]:
     """Pull one page of the authenticated user's Likes timeline. Returns (tweets, next_cursor).
 
@@ -511,7 +520,7 @@ def fetch_likes_page(
         "Origin": "https://x.com",
     }
 
-    raw = _graphql_get(url, headers, timeout, what="Likes timeline")
+    raw = _graphql_get(url, headers, timeout, what="Likes timeline", proxy=proxy)
     try:
         body = json.loads(raw.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as exc:
@@ -574,7 +583,7 @@ def fetch_likes_page(
     return tweets, next_cursor
 
 
-def download_media(url: str, *, timeout: int = 60, retries: int = 2) -> Tuple[bytes, str]:
+def download_media(url: str, *, timeout: int = 60, retries: int = 2, proxy: Optional[str] = None) -> Tuple[bytes, str]:
     """Returns (content_bytes, content_type). Retries transient failures with linear backoff."""
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
@@ -587,7 +596,14 @@ def download_media(url: str, *, timeout: int = 60, retries: int = 2) -> Tuple[by
                     "Referer": "https://twitter.com/",
                 },
             )
-            with urlopen(request, timeout=timeout) as response:
+            if proxy:
+                from urllib.request import build_opener, ProxyHandler
+                opener = build_opener(ProxyHandler({"http": proxy, "https": proxy}))
+                response_ctx = opener.open(request, timeout=timeout)
+            else:
+                response_ctx = urlopen(request, timeout=timeout)
+
+            with response_ctx as response:
                 content = response.read()
                 content_type = response.headers.get("Content-Type", "application/octet-stream")
                 return content, content_type

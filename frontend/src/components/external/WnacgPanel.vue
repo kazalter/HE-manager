@@ -316,7 +316,7 @@ const saveDownloadRootPath = async () => {
   }
 }
 
-const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }) => {
+const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number; proxy?: string | null }) => {
   if (!activeSourceId.value) return
   try {
     const res = await axios.patch(`${API_BASE_URL}/auto-sync/wnacg/${activeSourceId.value}`, payload)
@@ -432,17 +432,13 @@ watch([searchQuery, filteredItems], () => {
           {{ syncing ? '同步中' : '同步收藏' }}
         </button>
 
-        <p v-if="activeSource?.last_error" class="text-xs text-red-300 bg-red-400/10 border border-red-400/20 rounded-xl px-3 py-2">
-          {{ activeSource.last_error }}
-        </p>
-
-        <!-- Auto-sync section -->
         <AutoSyncSection
           v-if="activeSource"
           source-type="wnacg"
           :source-id="activeSource.id"
           :enabled="activeSource.auto_sync_enabled"
           :interval-hours="activeSource.auto_sync_interval_hours"
+          :proxy="activeSource.proxy ?? null"
           :last-run-at="activeSource.auto_sync_last_run_at"
           :next-run-at="activeSource.auto_sync_next_run_at"
           :last-status="activeSource.auto_sync_last_status"
@@ -451,6 +447,11 @@ watch([searchQuery, filteredItems], () => {
           disable-reason="请先保存 Cookie 并设置下载路径"
           @update="handleAutoSyncUpdate"
         />
+
+        <p v-if="activeSource?.last_error" class="text-xs text-red-300 bg-red-400/10 border border-red-400/20 rounded-xl px-3 py-2">
+          {{ activeSource.last_error }}
+        </p>
+
       </div>
 
       <div class="min-h-[360px] space-y-4">

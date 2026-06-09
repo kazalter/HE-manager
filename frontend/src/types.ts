@@ -199,6 +199,7 @@ export interface ExternalFavoriteSource {
     auto_sync_next_run_at: string | null;
     auto_sync_last_status: string | null;
     auto_sync_last_message: string | null;
+    proxy?: string | null;
 }
 
 export interface ExternalDownloadTask {
@@ -261,6 +262,7 @@ export interface XImportSource {
     auto_sync_next_run_at: string | null;
     auto_sync_last_status: string | null;
     auto_sync_last_message: string | null;
+    proxy?: string | null;
 }
 
 export interface XImportStats {

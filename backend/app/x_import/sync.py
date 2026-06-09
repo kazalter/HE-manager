@@ -112,6 +112,7 @@ def _run(job: SyncJob, cookie: str) -> None:
             job.stop_reason = "missing_source"
             return
 
+        proxy = source.proxy
         job.status = "running"
         job.started_at = datetime.utcnow().isoformat()
         job.message = "开始拉取喜欢列表"
@@ -128,7 +129,7 @@ def _run(job: SyncJob, cookie: str) -> None:
 
             try:
                 tweets, next_cursor = client.fetch_likes_page(
-                    cookie=cookie, user_id=user_id, cursor=cursor, count=PAGE_SIZE
+                    cookie=cookie, user_id=user_id, cursor=cursor, count=PAGE_SIZE, proxy=proxy
                 )
                 transient_attempts = 0
                 backoff = 0.0

@@ -149,7 +149,7 @@ def select_pending_post_ids(
     return [row[0] for row in query.order_by(models.XPost.discovered_at.asc(), models.XPost.id.asc()).all()]
 
 
-def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Folder) -> None:
+def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Folder, proxy: Optional[str] = None) -> None:
     post = db.query(models.XPost).filter(models.XPost.id == post_id).first()
     if not post:
         return
@@ -169,7 +169,7 @@ def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Fold
     db.commit()
 
     try:
-        tweet = client.fetch_tweet(post.tweet_id, cookie=job.cookie)
+        tweet = client.fetch_tweet(post.tweet_id, cookie=job.cookie, proxy=proxy)
     except client.TweetUnavailable as exc:
         post.status = "skipped"
         post.error_message = str(exc)
@@ -274,7 +274,7 @@ def _process_post(job: ImportJob, post_id: int, db: Session, folder: models.Fold
             record.duration_ms = media.duration_ms
 
         try:
-            content, content_type = client.download_media(media.url)
+            content, content_type = client.download_media(media.url, proxy=proxy)
         except client.TweetUnavailable as exc:
             record.status = "skipped"
             record.error_message = str(exc)
@@ -353,6 +353,9 @@ def _run(job: ImportJob) -> None:
         job.message = "准备中"
         job.started_at = datetime.utcnow().isoformat()
 
+        source = db.query(models.XImportSource).filter(models.XImportSource.id == job.source_id).first()
+        proxy = source.proxy if source else None
+
         folder = storage.ensure_folder_for_x(job.download_root, db)
         job.total_posts = len(job._post_ids)
 
@@ -372,7 +375,7 @@ def _run(job: ImportJob) -> None:
             if job.cancel_requested:
                 break
             try:
-                _process_post(job, post_id, db, folder)
+                _process_post(job, post_id, db, folder, proxy=proxy)
             except Exception as exc:
                 job.failed_posts += 1
                 job.log_error(str(post_id), f"未处理异常：{exc}")

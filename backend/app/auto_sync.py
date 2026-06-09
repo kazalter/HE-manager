@@ -159,7 +159,7 @@ def _run_wnacg(source_id: int) -> None:
 
         cookie = source.cookie
         base_url = _main.get_url_base(source.favorites_url)
-        first_html = external_sources.fetch_html(source.favorites_url, cookie)
+        first_html = external_sources.fetch_html(source.favorites_url, cookie, proxy=source.proxy)
         categories = external_sources.parse_wnacg_categories(first_html)
 
         existing_items = {
@@ -178,7 +178,7 @@ def _run_wnacg(source_id: int) -> None:
                     page_url = external_sources.wnacg_category_url(
                         category.id, page, base_url=base_url
                     )
-                    page_html = external_sources.fetch_html(page_url, cookie)
+                    page_html = external_sources.fetch_html(page_url, cookie, proxy=source.proxy)
                     page_items = external_sources.parse_wnacg_favorites(
                         page_html,
                         base_url=base_url,

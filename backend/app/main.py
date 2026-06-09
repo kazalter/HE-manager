@@ -580,6 +580,7 @@ def ensure_external_source_columns():
         "auto_sync_next_run_at": "DATETIME",
         "auto_sync_last_status": "VARCHAR",
         "auto_sync_last_message": "TEXT",
+        "proxy": "VARCHAR",
     }
 
     with engine.begin() as conn:
@@ -608,6 +609,7 @@ def ensure_x_import_auto_sync_columns():
         "auto_sync_next_run_at": "DATETIME",
         "auto_sync_last_status": "VARCHAR",
         "auto_sync_last_message": "TEXT",
+        "proxy": "VARCHAR",
     }
     with engine.begin() as conn:
         for name, definition in auto_sync_columns.items():
@@ -1586,6 +1588,7 @@ def ensure_external_cover_cache(item: models.ExternalFavoriteItem, source: model
                 item.cover_url,
                 source.cookie or "",
                 referer=item.url or source.favorites_url,
+                proxy=source.proxy,
             )
     except Exception as exc:  # noqa: BLE001
         print(f"  ! Failed to cache external cover for {item.title!r}: {exc}")
@@ -1994,7 +1997,7 @@ def prepare_wnacg_download_plan(item: models.ExternalFavoriteItem, source: model
     item_dir = external_item_download_dir(item, source, download_root_path)
 
     item_api_url = urljoin(item.url, f"/photos-item-aid-{item.external_id}.html")
-    item_html = external_sources.fetch_html(item_api_url, source.cookie or "")
+    item_html = external_sources.fetch_html(item_api_url, source.cookie or "", proxy=source.proxy)
     image_urls = external_sources.parse_wnacg_image_urls(item_html)
     if not image_urls:
         raise RuntimeError("没有解析到图片地址")
@@ -2025,7 +2028,7 @@ def download_wnacg_item(item: models.ExternalFavoriteItem, source: models.Extern
                 if task is not None:
                     task["downloaded_pages"] += 1
             continue
-        content, content_type = external_sources.fetch_binary(image_url, source.cookie or "", referer=item.url)
+        content, content_type = external_sources.fetch_binary(image_url, source.cookie or "", referer=item.url, proxy=source.proxy)
         extension = get_image_extension(content_type, image_url)
         image_path = os.path.join(item_dir, f"{index:03d}{extension}")
         with open(image_path, "wb") as image_file:
@@ -3290,6 +3293,8 @@ def update_external_source(source_id: int, payload: schemas.ExternalFavoriteSour
         source.playlist_url = (data["playlist_url"] or "").strip() or None
     if "api_mirrors" in data:
         source.api_mirrors = (data["api_mirrors"] or "").strip() or None
+    if "proxy" in data:
+        source.proxy = (data["proxy"] or "").strip() or None
     db.commit()
     db.refresh(source)
     return source
@@ -3368,7 +3373,7 @@ def sync_wnacg_favorites(payload: schemas.ExternalFavoriteSyncRequest, db: Sessi
         }
         existing_external_ids = set(existing_items.keys())
         base_url = get_url_base(source.favorites_url)
-        first_html = external_sources.fetch_html(source.favorites_url, cookie)
+        first_html = external_sources.fetch_html(source.favorites_url, cookie, proxy=source.proxy)
         categories = external_sources.parse_wnacg_categories(first_html)
         parsed_items: List[external_sources.ParsedExternalFavorite] = []
 
@@ -3381,7 +3386,7 @@ def sync_wnacg_favorites(payload: schemas.ExternalFavoriteSyncRequest, db: Sessi
             for category in categories:
                 for page in range(1, payload.page_limit + 1):
                     page_url = external_sources.wnacg_category_url(category.id, page, base_url=base_url)
-                    page_html = external_sources.fetch_html(page_url, cookie)
+                    page_html = external_sources.fetch_html(page_url, cookie, proxy=source.proxy)
                     page_items = external_sources.parse_wnacg_favorites(
                         page_html,
                         base_url=base_url,
@@ -3929,6 +3934,8 @@ def update_x_source(source_id: int, payload: schemas.XImportSourceUpdate, db: Se
             os.makedirs(x_storage.x_root_dir(normalized), exist_ok=True)
         else:
             source.download_root_path = None
+    if "proxy" in data:
+        source.proxy = (data["proxy"] or "").strip() or None
     db.commit()
     db.refresh(source)
     return source
@@ -5018,6 +5025,10 @@ def update_wnacg_auto_sync(
             raise HTTPException(status_code=400, detail="请先设置下载路径再启用自动同步")
 
     data = payload.dict(exclude_unset=True)
+    if "proxy" in data:
+        source.proxy = (data["proxy"] or "").strip() or None
+        db.commit()
+
     enabled = data.get("auto_sync_enabled", source.auto_sync_enabled or False)
     interval = data.get("auto_sync_interval_hours", source.auto_sync_interval_hours or 24)
 
@@ -5042,6 +5053,10 @@ def update_x_auto_sync(
             raise HTTPException(status_code=400, detail="请先设置下载路径再启用自动同步")
 
     data = payload.dict(exclude_unset=True)
+    if "proxy" in data:
+        source.proxy = (data["proxy"] or "").strip() or None
+        db.commit()
+
     enabled = data.get("auto_sync_enabled", source.auto_sync_enabled or False)
     interval = data.get("auto_sync_interval_hours", source.auto_sync_interval_hours or 24)
 
