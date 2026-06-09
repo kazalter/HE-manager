@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import axios from 'axios'
-import { Clock, Play, RefreshCw, AlertTriangle, CheckCircle, XCircle, Loader2 } from 'lucide-vue-next'
+import { Clock, Play, RefreshCw, AlertTriangle, CheckCircle, XCircle, Loader2, ChevronDown } from 'lucide-vue-next'
 import { API_BASE_URL } from '../../config'
 import type { AutoSyncLogEntry } from '../../types'
 
@@ -39,6 +39,17 @@ const triggering = ref(false)
 const triggerError = ref('')
 const logs = ref<AutoSyncLogEntry[]>([])
 const logsExpanded = ref(false)
+const intervalDropdownOpen = ref(false)
+
+const currentIntervalLabel = computed(() => {
+  const opt = intervalOptions.find(o => o.value === props.intervalHours)
+  return opt ? opt.label : `${props.intervalHours} 小时`
+})
+
+const selectInterval = (value: number) => {
+  emit('update', { auto_sync_interval_hours: value })
+  intervalDropdownOpen.value = false
+}
 
 const intervalOptions = [
   { value: 6, label: '每 6 小时' },
@@ -120,10 +131,7 @@ const toggleEnabled = () => {
   emit('update', { auto_sync_enabled: !props.enabled })
 }
 
-const changeInterval = (event: Event) => {
-  const value = parseInt((event.target as HTMLSelectElement).value, 10)
-  emit('update', { auto_sync_interval_hours: value })
-}
+
 
 const triggerNow = async () => {
   if (!props.sourceId || triggering.value) return
@@ -232,13 +240,31 @@ watch(() => props.sourceId, () => {
       <!-- Interval selector -->
       <div v-if="enabled" class="flex items-center gap-3">
         <span class="text-xs text-white/45 shrink-0">间隔</span>
-        <select
-          :value="intervalHours"
-          @change="changeInterval"
-          class="flex-1 bg-black/20 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none"
-        >
-          <option v-for="opt in intervalOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-        </select>
+        <div class="relative flex-1">
+          <button
+            type="button"
+            @click="intervalDropdownOpen = !intervalDropdownOpen"
+            class="w-full bg-black/20 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-accent/50 flex items-center justify-between hover:bg-white/5 transition-all text-left"
+          >
+            <span>{{ currentIntervalLabel }}</span>
+            <ChevronDown :size="12" :class="intervalDropdownOpen ? 'rotate-180' : ''" class="transition-transform text-white/45" />
+          </button>
+          <div
+            v-if="intervalDropdownOpen"
+            class="absolute left-0 top-full mt-1 z-50 w-full rounded-xl border border-white/10 bg-sidebar/95 backdrop-blur-xl shadow-2xl p-1 max-h-48 overflow-y-auto"
+          >
+            <button
+              v-for="opt in intervalOptions"
+              :key="opt.value"
+              type="button"
+              @click="selectInterval(opt.value)"
+              :class="intervalHours === opt.value ? 'bg-accent text-white' : 'text-white/65 hover:text-white hover:bg-white/8'"
+              class="w-full rounded-lg px-2.5 py-1.5 text-left text-xs font-bold transition-all"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Status display -->
