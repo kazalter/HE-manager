@@ -2,9 +2,22 @@ import json
 import os
 from typing import Optional
 
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-CONFIG_DIR = os.path.join(BACKEND_DIR, "instance")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "external_config.json")
+def _get_config_path() -> str:
+    db_url = os.getenv("HE_DATABASE_URL")
+    if db_url and db_url.startswith("sqlite:///"):
+        db_path = db_url[len("sqlite:///"):].lstrip("/")
+        if db_url.startswith("sqlite:////"):
+            db_path = "/" + db_path
+        db_dir = os.path.dirname(db_path)
+        if os.path.isdir(db_dir):
+            return os.path.join(db_dir, "external_config.json")
+    
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    config_dir = os.path.join(backend_dir, "instance")
+    os.makedirs(config_dir, exist_ok=True)
+    return os.path.join(config_dir, "external_config.json")
+
+CONFIG_PATH = _get_config_path()
 
 
 def _read_config() -> dict:
@@ -17,7 +30,7 @@ def _read_config() -> dict:
 
 
 def _write_config(data: dict) -> None:
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
