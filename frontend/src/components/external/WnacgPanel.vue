@@ -316,7 +316,7 @@ const saveDownloadRootPath = async () => {
   }
 }
 
-const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number; proxy?: string | null }) => {
+const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }) => {
   if (!activeSourceId.value) return
   try {
     const res = await axios.patch(`${API_BASE_URL}/auto-sync/wnacg/${activeSourceId.value}`, payload)
@@ -438,7 +438,6 @@ watch([searchQuery, filteredItems], () => {
           :source-id="activeSource.id"
           :enabled="activeSource.auto_sync_enabled"
           :interval-hours="activeSource.auto_sync_interval_hours"
-          :proxy="activeSource.proxy ?? null"
           :last-run-at="activeSource.auto_sync_last_run_at"
           :next-run-at="activeSource.auto_sync_next_run_at"
           :last-status="activeSource.auto_sync_last_status"

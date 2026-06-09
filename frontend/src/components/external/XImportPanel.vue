@@ -204,7 +204,7 @@ const fetchFailedPosts = async () => {
   }
 }
 
-const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number; proxy?: string | null }) => {
+const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }) => {
   if (!source.value) return
   try {
     const res = await axios.patch(`${API_BASE_URL}/auto-sync/x/${source.value.id}`, payload)
@@ -395,7 +395,6 @@ onUnmounted(() => {
           :source-id="source.id"
           :enabled="source.auto_sync_enabled"
           :interval-hours="source.auto_sync_interval_hours"
-          :proxy="source.proxy ?? null"
           :last-run-at="source.auto_sync_last_run_at"
           :next-run-at="source.auto_sync_next_run_at"
           :last-status="source.auto_sync_last_status"

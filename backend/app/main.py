@@ -5107,6 +5107,19 @@ def get_auto_sync_logs(
     return query.order_by(models.AutoSyncLog.id.desc()).limit(min(limit, 200)).all()
 
 
+@app.get("/auto-sync/proxy")
+def get_auto_sync_global_proxy():
+    from app.external_config import get_global_proxy
+    return {"proxy": get_global_proxy()}
+
+
+@app.patch("/auto-sync/proxy")
+def update_auto_sync_global_proxy(payload: schemas.GlobalProxyUpdate):
+    from app.external_config import update_global_proxy
+    new_proxy = update_global_proxy(payload.proxy)
+    return {"proxy": new_proxy}
+
+
 # Mount frontend build directory (SPA) at the root
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
 if os.path.isdir(frontend_dist):

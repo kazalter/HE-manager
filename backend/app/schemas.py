@@ -495,11 +495,13 @@ class XPost(BaseModel):
         from_attributes = True
 
 
-# --- Auto-sync scheduling ---
-
 class AutoSyncConfigUpdate(BaseModel):
     auto_sync_enabled: Optional[bool] = None
     auto_sync_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+    proxy: Optional[str] = None
+
+
+class GlobalProxyUpdate(BaseModel):
     proxy: Optional[str] = None
 
 

@@ -54,6 +54,10 @@ def _request(
     """Perform a GET/HEAD with browser TLS impersonation, retrying past
     Cloudflare's intermittent 403/connection-reset and swapping fingerprint
     profiles on handshake failure. Returns the curl_cffi Response."""
+    if not proxy:
+        from app.external_config import get_global_proxy
+        proxy = get_global_proxy()
+
     headers = {
         # Deliberately no User-Agent override: impersonate=chrome sets a Chrome
         # UA + client hints that must match the spoofed TLS fingerprint.
