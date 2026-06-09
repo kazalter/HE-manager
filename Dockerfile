@@ -14,7 +14,7 @@ WORKDIR /srv
 
 # Install deps first so the layer caches across code changes.
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # App package only — DB and media live on mounted volumes, never in the image.
 COPY backend/app ./app
