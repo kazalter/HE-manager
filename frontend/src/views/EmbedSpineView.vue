@@ -170,7 +170,7 @@ const setupAndroidExposedApis = () => {
   w.setSkin = (name: string) => {
     if (player) {
       try {
-        player.setSkin(name)
+        (player as any).setSkin(name)
       } catch (e) {
         console.error('Set skin error:', e)
       }
