@@ -292,9 +292,8 @@ def _graphql_get(url: str, headers: dict, timeout: int, *, what: str, proxy: Opt
     framework-agnostic."""
     network_errors: List[str] = []
     response = None
-    if not proxy:
-        from app.external_config import get_global_proxy
-        proxy = get_global_proxy()
+    from app.external_config import get_global_proxy
+    proxy = get_global_proxy()
     proxies_dict = {"http": proxy, "https": proxy} if proxy else None
     for impersonate, keep_user_agent in GRAPHQL_IMPERSONATIONS:
         request_headers = dict(headers)
@@ -416,9 +415,8 @@ def _fetch_via_graphql(tweet_id: str, cookie: str, timeout: int, proxy: Optional
 def fetch_tweet(tweet_id: str, *, cookie: Optional[str] = None, timeout: int = 20, proxy: Optional[str] = None) -> TweetData:
     """Fetch tweet metadata. With cookie: authenticated GraphQL (sees adult content).
     Without cookie: public syndication endpoint (anonymous, hides age-gated tweets)."""
-    if not proxy:
-        from app.external_config import get_global_proxy
-        proxy = get_global_proxy()
+    from app.external_config import get_global_proxy
+    proxy = get_global_proxy()
     if cookie:
         return _fetch_via_graphql(tweet_id, cookie, timeout, proxy=proxy)
 
@@ -591,9 +589,8 @@ def fetch_likes_page(
 
 def download_media(url: str, *, timeout: int = 60, retries: int = 2, proxy: Optional[str] = None) -> Tuple[bytes, str]:
     """Returns (content_bytes, content_type). Retries transient failures with linear backoff."""
-    if not proxy:
-        from app.external_config import get_global_proxy
-        proxy = get_global_proxy()
+    from app.external_config import get_global_proxy
+    proxy = get_global_proxy()
     last_error: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
