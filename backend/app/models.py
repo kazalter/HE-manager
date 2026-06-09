@@ -212,6 +212,8 @@ class ExternalFavoriteSource(Base):
     auto_sync_next_run_at = Column(DateTime, nullable=True)
     auto_sync_last_status = Column(String, nullable=True)   # success | failed | running
     auto_sync_last_message = Column(Text, nullable=True)
+    proxy = Column(String, nullable=True)
+
 
     items = relationship("ExternalFavoriteItem", back_populates="source", cascade="all, delete-orphan")
 
@@ -261,6 +263,8 @@ class XImportSource(Base):
     auto_sync_next_run_at = Column(DateTime, nullable=True)
     auto_sync_last_status = Column(String, nullable=True)   # success | failed | running
     auto_sync_last_message = Column(Text, nullable=True)
+    proxy = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
