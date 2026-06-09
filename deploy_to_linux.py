@@ -36,7 +36,9 @@ def run_local_build(frontend_dir):
             cwd=frontend_dir, 
             check=True, 
             capture_output=True, 
-            text=True
+            text=True,
+            encoding="utf-8",
+            errors="ignore"
         )
         print(result.stdout)
         print("Vite build completed successfully!")
