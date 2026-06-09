@@ -18,7 +18,8 @@ import {
 } from 'lucide-vue-next'
 import { API_BASE_URL } from '../../config'
 import { xImportStore } from '../../stores/xImportStore'
-import type { XPost } from '../../types'
+import type { XImportSource, XPost } from '../../types'
+import AutoSyncSection from './AutoSyncSection.vue'
 
 const downloadRootPath = ref('')
 const cookieString = ref('')
@@ -203,6 +204,17 @@ const fetchFailedPosts = async () => {
   }
 }
 
+const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }) => {
+  if (!source.value) return
+  try {
+    const res = await axios.patch(`${API_BASE_URL}/auto-sync/x/${source.value.id}`, payload)
+    const updated = res.data as XImportSource
+    xImportStore.state.source = updated
+  } catch (err: any) {
+    xImportStore.setError(err.response?.data?.detail || '更新自动同步配置失败')
+  }
+}
+
 let unsubscribe: (() => void) | null = null
 
 onMounted(async () => {
@@ -375,6 +387,22 @@ onUnmounted(() => {
           <p>· 增量同步同样靠归档：再次上传新归档时，只处理新增和失败的 Post。</p>
           <p>· 媒体地址用公开 syndication 接口拉取，对你的账号不做任何写操作（不点赞、不关注、不发推）。</p>
         </div>
+
+        <!-- Auto-sync section -->
+        <AutoSyncSection
+          v-if="source"
+          source-type="x"
+          :source-id="source.id"
+          :enabled="source.auto_sync_enabled"
+          :interval-hours="source.auto_sync_interval_hours"
+          :last-run-at="source.auto_sync_last_run_at"
+          :next-run-at="source.auto_sync_next_run_at"
+          :last-status="source.auto_sync_last_status"
+          :last-message="source.auto_sync_last_message"
+          :can-enable="!!source.cookie_saved && !!source.download_root_path"
+          disable-reason="请先保存 Cookie 并设置下载位置"
+          @update="handleAutoSyncUpdate"
+        />
       </div>
 
       <!-- Action / progress -->

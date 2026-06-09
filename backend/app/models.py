@@ -205,6 +205,13 @@ class ExternalFavoriteSource(Base):
     audio_version_filter = Column(String, nullable=True)  # 'all' | 'no_se' | 'se_only'
     username = Column(String, nullable=True)              # asmr.one account name (for re-login if token expires)
     playlist_url = Column(String, nullable=True)          # opt-in: pull from a playlist instead of "marked"
+    # Auto-sync scheduling fields (shared by wnacg and asmr source types).
+    auto_sync_enabled = Column(Boolean, default=False)
+    auto_sync_interval_hours = Column(Integer, default=24)
+    auto_sync_last_run_at = Column(DateTime, nullable=True)
+    auto_sync_next_run_at = Column(DateTime, nullable=True)
+    auto_sync_last_status = Column(String, nullable=True)   # success | failed | running
+    auto_sync_last_message = Column(Text, nullable=True)
 
     items = relationship("ExternalFavoriteItem", back_populates="source", cascade="all, delete-orphan")
 
@@ -247,6 +254,13 @@ class XImportSource(Base):
     last_sync_at = Column(DateTime, nullable=True)
     last_cursor = Column(String, nullable=True)
     cookie = Column(Text, nullable=True)
+    # Auto-sync scheduling fields.
+    auto_sync_enabled = Column(Boolean, default=False)
+    auto_sync_interval_hours = Column(Integer, default=24)
+    auto_sync_last_run_at = Column(DateTime, nullable=True)
+    auto_sync_next_run_at = Column(DateTime, nullable=True)
+    auto_sync_last_status = Column(String, nullable=True)   # success | failed | running
+    auto_sync_last_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -352,3 +366,20 @@ class XMediaItem(Base):
     downloaded_at = Column(DateTime, nullable=True)
 
     post = relationship("XPost", back_populates="media_items")
+
+
+class AutoSyncLog(Base):
+    __tablename__ = "auto_sync_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_type = Column(String, index=True)  # "wnacg" | "x"
+    source_id = Column(Integer, index=True)
+    action = Column(String)           # "sync" | "download" | "sync+download"
+    status = Column(String)           # "success" | "failed" | "partial"
+    synced_count = Column(Integer, default=0)
+    downloaded_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)

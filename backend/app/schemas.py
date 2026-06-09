@@ -208,6 +208,12 @@ class ExternalFavoriteSource(BaseModel):
     last_synced_at: Optional[datetime] = None
     last_error: Optional[str] = None
     cookie_saved: bool = False
+    auto_sync_enabled: bool = False
+    auto_sync_interval_hours: int = 24
+    auto_sync_last_run_at: Optional[datetime] = None
+    auto_sync_next_run_at: Optional[datetime] = None
+    auto_sync_last_status: Optional[str] = None
+    auto_sync_last_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -314,6 +320,12 @@ class XImportSource(BaseModel):
     last_archive_imported_at: Optional[datetime] = None
     last_sync_at: Optional[datetime] = None
     cookie_saved: bool = False
+    auto_sync_enabled: bool = False
+    auto_sync_interval_hours: int = 24
+    auto_sync_last_run_at: Optional[datetime] = None
+    auto_sync_next_run_at: Optional[datetime] = None
+    auto_sync_last_status: Optional[str] = None
+    auto_sync_last_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -470,6 +482,49 @@ class XPost(BaseModel):
     last_attempt_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     discovered_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Auto-sync scheduling ---
+
+class AutoSyncConfigUpdate(BaseModel):
+    auto_sync_enabled: Optional[bool] = None
+    auto_sync_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+
+
+class AutoSyncSourceStatus(BaseModel):
+    source_type: str
+    source_id: int
+    source_name: str
+    enabled: bool
+    interval_hours: int
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_message: Optional[str] = None
+    running: bool = False
+
+
+class AutoSyncStatus(BaseModel):
+    scheduler_running: bool
+    sources: List[AutoSyncSourceStatus] = []
+
+
+class AutoSyncLogEntry(BaseModel):
+    id: int
+    source_type: str
+    source_id: int
+    action: str
+    status: str
+    synced_count: int = 0
+    downloaded_count: int = 0
+    failed_count: int = 0
+    message: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
 
     class Config:
         from_attributes = True

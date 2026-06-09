@@ -19,6 +19,7 @@ import { API_BASE_URL, authUrl } from '../../config'
 import type { ExternalFavoriteItem, ExternalFavoriteSource, Media } from '../../types'
 import MediaDetail from '../MediaDetail.vue'
 import ExternalDownloadProgress from '../ExternalDownloadProgress.vue'
+import AutoSyncSection from './AutoSyncSection.vue'
 import { externalDownloadStore } from '../../stores/externalDownloadStore'
 
 const favoritesUrl = ref('https://www.wnacg.com/users-users_fav.html')
@@ -315,6 +316,17 @@ const saveDownloadRootPath = async () => {
   }
 }
 
+const handleAutoSyncUpdate = async (payload: { auto_sync_enabled?: boolean; auto_sync_interval_hours?: number }) => {
+  if (!activeSourceId.value) return
+  try {
+    const res = await axios.patch(`${API_BASE_URL}/auto-sync/wnacg/${activeSourceId.value}`, payload)
+    const updated = res.data as ExternalFavoriteSource
+    sources.value = sources.value.map(s => s.id === updated.id ? updated : s)
+  } catch (err: any) {
+    errorMessage.value = err.response?.data?.detail || '更新自动同步配置失败'
+  }
+}
+
 let unsubscribeCompleted: (() => void) | null = null
 
 onMounted(async () => {
@@ -423,6 +435,22 @@ watch([searchQuery, filteredItems], () => {
         <p v-if="activeSource?.last_error" class="text-xs text-red-300 bg-red-400/10 border border-red-400/20 rounded-xl px-3 py-2">
           {{ activeSource.last_error }}
         </p>
+
+        <!-- Auto-sync section -->
+        <AutoSyncSection
+          v-if="activeSource"
+          source-type="wnacg"
+          :source-id="activeSource.id"
+          :enabled="activeSource.auto_sync_enabled"
+          :interval-hours="activeSource.auto_sync_interval_hours"
+          :last-run-at="activeSource.auto_sync_last_run_at"
+          :next-run-at="activeSource.auto_sync_next_run_at"
+          :last-status="activeSource.auto_sync_last_status"
+          :last-message="activeSource.auto_sync_last_message"
+          :can-enable="!!activeSource.cookie_saved && !!activeSource.download_root_path"
+          disable-reason="请先保存 Cookie 并设置下载路径"
+          @update="handleAutoSyncUpdate"
+        />
       </div>
 
       <div class="min-h-[360px] space-y-4">

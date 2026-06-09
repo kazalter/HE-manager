@@ -193,6 +193,12 @@ export interface ExternalFavoriteSource {
     audio_format_filter?: string | null;
     audio_version_filter?: string | null;
     playlist_url?: string | null;
+    auto_sync_enabled: boolean;
+    auto_sync_interval_hours: number;
+    auto_sync_last_run_at: string | null;
+    auto_sync_next_run_at: string | null;
+    auto_sync_last_status: string | null;
+    auto_sync_last_message: string | null;
 }
 
 export interface ExternalDownloadTask {
@@ -249,6 +255,12 @@ export interface XImportSource {
     last_archive_imported_at: string | null;
     last_sync_at: string | null;
     cookie_saved: boolean;
+    auto_sync_enabled: boolean;
+    auto_sync_interval_hours: number;
+    auto_sync_last_run_at: string | null;
+    auto_sync_next_run_at: string | null;
+    auto_sync_last_status: string | null;
+    auto_sync_last_message: string | null;
 }
 
 export interface XImportStats {
@@ -441,4 +453,21 @@ export interface StatsHighlights {
     top_creators: StatsTopCreator[];
     top_videos: StatsTopVideo[];
     top_tags: StatsTopTag[];
+}
+
+// -- Auto-sync scheduling ---------------------------------------------------
+
+export interface AutoSyncLogEntry {
+    id: number;
+    source_type: string;
+    source_id: number;
+    action: string;
+    status: string;
+    synced_count: number;
+    downloaded_count: number;
+    failed_count: number;
+    message: string | null;
+    started_at: string;
+    finished_at: string | null;
+    duration_seconds: number | null;
 }
