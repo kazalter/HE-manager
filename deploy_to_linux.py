@@ -145,6 +145,12 @@ def deploy():
             ignore_files=ignore_files, 
             ignore_dirs=ignore_dirs
         )
+        
+        # 3.5. Upload root configuration files (Dockerfile, docker-compose.yml)
+        print("\n==> Syncing Root Configuration Files...")
+        sftp.put(os.path.join(script_dir, "Dockerfile"), f"{REMOTE_ROOT}/Dockerfile")
+        sftp.put(os.path.join(script_dir, "docker-compose.yml"), f"{REMOTE_ROOT}/docker-compose.yml")
+        
         print("\nSync completed successfully!")
     except Exception as e:
         print(f"Error during file sync: {e}")
