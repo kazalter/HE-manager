@@ -3,6 +3,12 @@ import sys
 import subprocess
 import paramiko
 
+# Reconfigure stdout/stderr to UTF-8 to support printing unicode characters on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # Configuration — read from .env file next to this script
 def load_env():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
