@@ -1,7 +1,9 @@
 import { reactive } from 'vue'
 import axios from 'axios'
-import { API_BASE_URL, AUTH_TOKEN_STORAGE_KEY } from './config'
+import { API_BASE_URL } from './config'
 import type { User } from './types'
+
+const AUTH_TOKEN_STORAGE_KEY = 'he_manager_token'
 
 export const authState = reactive({
   ready: false,
