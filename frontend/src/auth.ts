@@ -91,4 +91,14 @@ export const logout = async () => {
   }
   applyToken('')
   authState.user = null
+  try {
+    const status = await axios.get(`${API_BASE_URL}/auth/status`, { timeout: 5000 })
+    authState.hasUsers = Boolean(status.data.has_users)
+    authState.error = ''
+  } catch (err: any) {
+    authState.hasUsers = true
+    authState.error = err.code === 'ECONNABORTED'
+      ? '连接后端超时，请确认 HE Manager 服务正在运行。'
+      : '无法连接后端，请确认 HE Manager 服务正在运行。'
+  }
 }
