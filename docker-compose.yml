@@ -1,10 +1,10 @@
-# HE Manager — backend-only stack for the Linux mini-host (x86_64 / N100).
+# HE Manager stack for the Linux mini-host (x86_64 / N100).
 #
 #   Prepare now in a VM:   docker compose build && docker compose up -d
 #   On the real host:      mount the media HDD first (see below), then the same.
 #
-# The Android app connects to the host (directly, or via the Sakura FRP https
-# subdomain) on port 8010. No web frontend is served here by design.
+# The backend stays directly reachable on port 8010. The web frontend is served
+# by nginx and is expected to be exposed through Nginx Proxy Manager.
 services:
   backend:
     build:
@@ -51,7 +51,14 @@ services:
     image: nginx:1.27-alpine
     container_name: he-manager-frontend
     restart: unless-stopped
-    ports:
-      - "8012:80"
     volumes:
       - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - default
+      - npm_proxy
+
+networks:
+  npm_proxy:
+    external: true
+    name: nginx-proxy-manager_default

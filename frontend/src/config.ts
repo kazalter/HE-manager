@@ -1,6 +1,6 @@
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
 
-export const API_BASE_URL = configuredApiBase || `${window.location.protocol}//${window.location.hostname}:8010`;
+export const API_BASE_URL = configuredApiBase;
 export const THUMBNAIL_URL = `${API_BASE_URL}/thumbnails`;
 export const STREAM_URL = `${API_BASE_URL}/stream`;
 export const AUTH_TOKEN_STORAGE_KEY = 'he_manager_token';
