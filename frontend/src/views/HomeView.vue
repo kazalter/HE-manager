@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { ChevronDown, Filter, Search, SortAsc, Star } from 'lucide-vue-next'
 import { API_BASE_URL } from '../config'
+import { authState } from '../auth'
 import type { Media, Tag } from '../types'
 import MediaCard from '../components/MediaCard.vue'
 import MediaDetail from '../components/MediaDetail.vue'
@@ -17,6 +18,7 @@ const router = useRouter()
 const mediaList = ref<Media[]>([])
 const tags = ref<Tag[]>([])
 const loading = ref(true)
+const mediaError = ref('')
 const selectedMedia = ref<Media | null>(null)
 const searchQuery = ref('')
 const sortBy = ref<'date' | 'title' | 'rating' | 'opened'>('date')
@@ -52,19 +54,26 @@ const fetchTags = async () => {
 
 const fetchMedia = async () => {
   loading.value = true
+  mediaError.value = ''
   try {
-    const params: Record<string, string | boolean | undefined> = {
-      media_type: props.mediaType,
-      search: searchQuery.value || undefined,
-      tag: selectedTag.value || undefined,
-      favorite: favoriteOnly.value ? true : undefined,
-      source_site: sourceFilter.value || undefined,
-      sort: sortBy.value,
-    }
+    const params: Record<string, string | boolean> = { sort: sortBy.value }
+    if (props.mediaType) params.media_type = props.mediaType
+    if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+    if (selectedTag.value) params.tag = selectedTag.value
+    if (favoriteOnly.value) params.favorite = true
+    if (sourceFilter.value) params.source_site = sourceFilter.value
+
     const res = await axios.get(`${API_BASE_URL}/media`, { params })
     mediaList.value = res.data
-  } catch (err) {
+  } catch (err: any) {
     console.error('Failed to fetch media:', err)
+    mediaList.value = []
+    const status = err?.response?.status
+    mediaError.value = status === 401
+      ? '登录状态已失效，请重新登录。'
+      : status === 403
+        ? '当前账号没有权限读取媒体列表。'
+        : '无法加载媒体列表，请检查后端连接。'
   } finally {
     loading.value = false
   }
@@ -158,6 +167,7 @@ watch(() => route.query.media, () => {
 })
 
 const triggerMissingRecheck = async () => {
+  if (!authState.user?.is_admin) return
   try {
     const res = await axios.post(`${API_BASE_URL}/system/recheck-missing`)
     if (res.data.recovered > 0) {
@@ -172,7 +182,7 @@ onMounted(async () => {
   await fetchMedia()
   await syncSelectedMediaFromRoute()
   fetchTags()
-  triggerMissingRecheck()
+  await triggerMissingRecheck()
 })
 </script>
 
@@ -322,6 +332,14 @@ onMounted(async () => {
     <div class="px-6 md:px-8 pb-12">
       <div v-if="loading" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-5 md:gap-7">
         <div v-for="i in 12" :key="i" class="aspect-[3/4.5] bg-white/5 animate-pulse rounded-2xl border border-white/5"></div>
+      </div>
+
+      <div v-else-if="mediaError" class="flex flex-col items-center justify-center py-32 text-amber-100 text-center">
+        <div class="w-16 h-16 rounded-2xl bg-amber-400/10 flex items-center justify-center mb-5 border border-amber-300/20">
+          <Search :size="28" />
+        </div>
+        <p class="text-lg font-bold mb-2">媒体列表加载失败</p>
+        <p class="text-sm text-amber-100/75">{{ mediaError }}</p>
       </div>
 
       <div
