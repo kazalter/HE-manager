@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { authState, initAuth, logout } from './auth'
+import { authState, logout } from './auth'
 import Sidebar from './components/Sidebar.vue'
 import AuthView from './views/AuthView.vue'
 
@@ -12,7 +12,6 @@ const isEmbed = computed(() => {
   return route.path.endsWith('/embed') || route.query.embed === 'true'
 })
 
-onMounted(initAuth)
 </script>
 
 <template>

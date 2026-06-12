@@ -3,8 +3,11 @@ import './style.css'
 import App from './App.vue'
 import router from './router'
 import { initTheme } from './theme'
+import { initAuth } from './auth'
 
 initTheme()
-const app = createApp(App)
-app.use(router)
-app.mount('#app')
+initAuth().finally(() => {
+  const app = createApp(App)
+  app.use(router)
+  app.mount('#app')
+})

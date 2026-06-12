@@ -24,6 +24,15 @@ const applyToken = (token: string) => {
   }
 }
 
+axios.interceptors.request.use(config => {
+  const token = authState.token || localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || ''
+  if (token) {
+    config.headers = config.headers || {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 axios.interceptors.response.use(
   response => response,
   error => {
