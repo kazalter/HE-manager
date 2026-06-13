@@ -13,11 +13,12 @@ Architecture:
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import traceback
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Set
+from typing import IO, List, Optional, Set
 
 from . import database, models
 
@@ -28,17 +29,192 @@ from . import database, models
 _lock = threading.Lock()
 _running = False
 _ticker_thread: Optional[threading.Thread] = None
+_scheduler_lock_file: Optional[IO[str]] = None
 # source keys currently executing (to prevent overlap)
 _active: Set[str] = set()
+_source_lock_files: dict[str, IO[str]] = {}
 
 # Minimum tick interval in seconds.  The ticker wakes up this often to check
 # whether any source is overdue.  30s is a good balance between responsiveness
 # and idle-CPU friendliness.
 TICK_INTERVAL = 30
+RETRY_DELAYS_MINUTES = [5, 15, 60]
+WNACG_DOWNLOAD_LIMIT = max(1, int(os.getenv("HE_AUTO_SYNC_WNACG_DOWNLOAD_LIMIT", "20")))
+LOG_RETENTION_DAYS = max(1, int(os.getenv("HE_AUTO_SYNC_LOG_RETENTION_DAYS", "90")))
+LOG_RETENTION_PER_SOURCE = max(1, int(os.getenv("HE_AUTO_SYNC_LOG_RETENTION_PER_SOURCE", "500")))
+LOCK_DIR = os.getenv("HE_AUTO_SYNC_LOCK_DIR", "/tmp/he-manager-auto-sync")
 
 
 def _source_key(source_type: str, source_id: int) -> str:
     return f"{source_type}:{source_id}"
+
+
+def _lock_file_name(key: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key)
+
+
+def _try_lock_file(path: str) -> Optional[IO[str]]:
+    """Acquire a non-blocking process lock, returning the held file handle."""
+    lock_dir = os.path.dirname(path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    lock_file = open(path, "a+", encoding="utf-8")
+    try:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    except Exception:
+        lock_file.close()
+        raise
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(f"{os.getpid()} {datetime.utcnow().isoformat()}\n")
+    lock_file.flush()
+    return lock_file
+
+
+def _release_lock_file(lock_file: IO[str]) -> None:
+    try:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+
+
+def _try_acquire_scheduler_lock() -> bool:
+    global _scheduler_lock_file
+    lock_file = _try_lock_file(_scheduler_lock_path())
+    if not lock_file:
+        return False
+    _scheduler_lock_file = lock_file
+    return True
+
+
+def _scheduler_lock_path() -> str:
+    return os.getenv(
+        "HE_AUTO_SYNC_SCHEDULER_LOCK_PATH",
+        os.path.join(LOCK_DIR, "scheduler.lock"),
+    )
+
+
+def _release_scheduler_lock() -> None:
+    global _scheduler_lock_file
+    if _scheduler_lock_file:
+        _release_lock_file(_scheduler_lock_file)
+        _scheduler_lock_file = None
+
+
+def _try_acquire_source(source_type: str, source_id: int) -> bool:
+    key = _source_key(source_type, source_id)
+    with _lock:
+        if key in _active:
+            return False
+        lock_path = os.path.join(LOCK_DIR, f"{_lock_file_name(key)}.lock")
+        lock_file = _try_lock_file(lock_path)
+        if not lock_file:
+            return False
+        _active.add(key)
+        _source_lock_files[key] = lock_file
+        return True
+
+
+def _release_source(source_type: str, source_id: int) -> None:
+    key = _source_key(source_type, source_id)
+    with _lock:
+        _active.discard(key)
+        lock_file = _source_lock_files.pop(key, None)
+    if lock_file:
+        _release_lock_file(lock_file)
+
+
+def _run_source_worker(source_type: str, source_id: int) -> None:
+    try:
+        if source_type == "wnacg":
+            _run_wnacg(source_id)
+        elif source_type == "x":
+            _run_x(source_id)
+    finally:
+        _release_source(source_type, source_id)
+
+
+def _retry_delays() -> List[timedelta]:
+    raw = os.getenv("HE_AUTO_SYNC_RETRY_DELAYS_MINUTES")
+    if not raw:
+        return [timedelta(minutes=value) for value in RETRY_DELAYS_MINUTES]
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            values.append(max(1, int(part)))
+    return [timedelta(minutes=value) for value in (values or RETRY_DELAYS_MINUTES)]
+
+
+def _next_run_after_status(
+    db,
+    source_type: str,
+    source_id: int,
+    status: str,
+    finished_at: datetime,
+    interval_hours: int,
+) -> datetime:
+    if status == "success":
+        return finished_at + timedelta(hours=interval_hours)
+
+    delays = _retry_delays()
+    previous_failures = 0
+    recent_logs = (
+        db.query(models.AutoSyncLog)
+        .filter(
+            models.AutoSyncLog.source_type == source_type,
+            models.AutoSyncLog.source_id == source_id,
+        )
+        .order_by(models.AutoSyncLog.id.desc())
+        .limit(len(delays))
+        .all()
+    )
+    for log in recent_logs:
+        if log.status == "success":
+            break
+        previous_failures += 1
+    delay = delays[min(previous_failures, len(delays) - 1)]
+    return finished_at + delay
+
+
+def _prune_auto_sync_logs(db) -> None:
+    cutoff = datetime.utcnow() - timedelta(days=LOG_RETENTION_DAYS)
+    db.query(models.AutoSyncLog).filter(models.AutoSyncLog.started_at < cutoff).delete(
+        synchronize_session=False
+    )
+
+    pairs = (
+        db.query(models.AutoSyncLog.source_type, models.AutoSyncLog.source_id)
+        .distinct()
+        .all()
+    )
+    for source_type, source_id in pairs:
+        keep_ids = [
+            row[0]
+            for row in (
+                db.query(models.AutoSyncLog.id)
+                .filter(
+                    models.AutoSyncLog.source_type == source_type,
+                    models.AutoSyncLog.source_id == source_id,
+                )
+                .order_by(models.AutoSyncLog.id.desc())
+                .limit(LOG_RETENTION_PER_SOURCE)
+                .all()
+            )
+        ]
+        if keep_ids:
+            db.query(models.AutoSyncLog).filter(
+                models.AutoSyncLog.source_type == source_type,
+                models.AutoSyncLog.source_id == source_id,
+                ~models.AutoSyncLog.id.in_(keep_ids),
+            ).delete(synchronize_session=False)
 
 
 # ---------------------------------------------------------------------------
@@ -61,16 +237,14 @@ def _tick() -> None:
             .all()
         )
         for source in wnacg_sources:
-            key = _source_key("wnacg", source.id)
-            if key in _active:
-                continue
             if source.auto_sync_next_run_at and source.auto_sync_next_run_at > now:
                 continue
             # Time to run
-            _active.add(key)
+            if not _try_acquire_source("wnacg", source.id):
+                continue
             threading.Thread(
-                target=_run_wnacg,
-                args=(source.id,),
+                target=_run_source_worker,
+                args=("wnacg", source.id),
                 daemon=True,
                 name=f"auto-sync-wnacg-{source.id}",
             ).start()
@@ -82,15 +256,13 @@ def _tick() -> None:
             .all()
         )
         for source in x_sources:
-            key = _source_key("x", source.id)
-            if key in _active:
-                continue
             if source.auto_sync_next_run_at and source.auto_sync_next_run_at > now:
                 continue
-            _active.add(key)
+            if not _try_acquire_source("x", source.id):
+                continue
             threading.Thread(
-                target=_run_x,
-                args=(source.id,),
+                target=_run_source_worker,
+                args=("x", source.id),
                 daemon=True,
                 name=f"auto-sync-x-{source.id}",
             ).start()
@@ -120,7 +292,6 @@ def _ticker_loop() -> None:
 
 def _run_wnacg(source_id: int) -> None:
     """Sync WNACG favourites then download all new (un-downloaded) items."""
-    key = _source_key("wnacg", source_id)
     db = database.SessionLocal()
     started_at = datetime.utcnow()
     synced_count = 0
@@ -242,6 +413,13 @@ def _run_wnacg(source_id: int) -> None:
             .filter(models.ExternalFavoriteItem.source_id == source.id)
             .all()
         )
+        all_items.sort(
+            key=lambda item: (
+                item.sync_position is None,
+                item.sync_position if item.sync_position is not None else 0,
+                item.id or 0,
+            )
+        )
         download_root = source.download_root_path
         to_download = []
         for fav_item in all_items:
@@ -250,13 +428,21 @@ def _run_wnacg(source_id: int) -> None:
                 to_download.append(fav_item)
 
         if to_download:
-            message = f"同步完成（新增 {synced_count}），开始下载 {len(to_download)} 本"
+            remaining_count = max(0, len(to_download) - WNACG_DOWNLOAD_LIMIT)
+            download_batch = to_download[:WNACG_DOWNLOAD_LIMIT]
+            if remaining_count:
+                message = (
+                    f"同步完成（新增 {synced_count}），"
+                    f"本轮下载 {len(download_batch)} 本，剩余 {remaining_count} 本待后续自动同步"
+                )
+            else:
+                message = f"同步完成（新增 {synced_count}），开始下载 {len(download_batch)} 本"
             source.auto_sync_last_message = message
             db.commit()
 
             _main.ensure_external_manga_library(source, download_root, db)
 
-            for fav_item in to_download:
+            for fav_item in download_batch:
                 try:
                     plan = _main.prepare_wnacg_download_plan(
                         fav_item, source, download_root
@@ -290,6 +476,10 @@ def _run_wnacg(source_id: int) -> None:
                 f"同步新增 {synced_count}，"
                 f"下载 {downloaded_count} 本"
             )
+        if len(to_download) > WNACG_DOWNLOAD_LIMIT:
+            remaining_count = len(to_download) - WNACG_DOWNLOAD_LIMIT
+            status = "partial" if status == "success" else status
+            message += f"，剩余 {remaining_count} 本待后续自动同步"
 
     except Exception as exc:
         status = "failed"
@@ -310,8 +500,8 @@ def _run_wnacg(source_id: int) -> None:
                 source.auto_sync_last_message = message
                 source.auto_sync_last_run_at = started_at
                 interval = source.auto_sync_interval_hours or 24
-                source.auto_sync_next_run_at = (
-                    finished_at + timedelta(hours=interval)
+                source.auto_sync_next_run_at = _next_run_after_status(
+                    db, "wnacg", source_id, status, finished_at, interval
                 )
                 db.commit()
 
@@ -329,12 +519,13 @@ def _run_wnacg(source_id: int) -> None:
                 duration_seconds=duration,
             )
             db.add(log)
+            _prune_auto_sync_logs(db)
             db.commit()
         except Exception:
             traceback.print_exc()
         finally:
             db.close()
-            _active.discard(key)
+            _release_source("wnacg", source_id)
             print(
                 f"  [auto-sync] wnacg #{source_id} finished: "
                 f"{status} — synced={synced_count} downloaded={downloaded_count} "
@@ -348,7 +539,6 @@ def _run_wnacg(source_id: int) -> None:
 
 def _run_x(source_id: int) -> None:
     """Sync X likes via GraphQL then download all pending posts."""
-    key = _source_key("x", source_id)
     db = database.SessionLocal()
     started_at = datetime.utcnow()
     synced_count = 0
@@ -507,8 +697,8 @@ def _run_x(source_id: int) -> None:
                 source.auto_sync_last_message = message
                 source.auto_sync_last_run_at = started_at
                 interval = source.auto_sync_interval_hours or 24
-                source.auto_sync_next_run_at = (
-                    finished_at + timedelta(hours=interval)
+                source.auto_sync_next_run_at = _next_run_after_status(
+                    db, "x", source_id, status, finished_at, interval
                 )
                 source.last_sync_at = datetime.utcnow()
                 db.commit()
@@ -527,12 +717,13 @@ def _run_x(source_id: int) -> None:
                 duration_seconds=duration,
             )
             db.add(log)
+            _prune_auto_sync_logs(db)
             db.commit()
         except Exception:
             traceback.print_exc()
         finally:
             db.close()
-            _active.discard(key)
+            _release_source("x", source_id)
             print(
                 f"  [auto-sync] x #{source_id} finished: "
                 f"{status} — synced={synced_count} downloaded={downloaded_count} "
@@ -550,6 +741,9 @@ def init() -> None:
     with _lock:
         if _running:
             return
+        if not _try_acquire_scheduler_lock():
+            print("  [auto-sync] scheduler already active in another process")
+            return
         _running = True
         # Restore next_run_at for sources that have auto_sync enabled but
         # next_run_at is in the past (e.g. the server was down for a while).
@@ -565,40 +759,45 @@ def stop() -> None:
     """Stop the scheduler.  Optional; daemon threads die with the process."""
     global _running
     _running = False
+    _release_scheduler_lock()
 
 
 def is_running() -> bool:
-    return _running
+    if _running:
+        return True
+    lock_file = _try_lock_file(_scheduler_lock_path())
+    if lock_file:
+        _release_lock_file(lock_file)
+        return False
+    return True
 
 
 def is_source_active(source_type: str, source_id: int) -> bool:
-    return _source_key(source_type, source_id) in _active
+    with _lock:
+        return _source_key(source_type, source_id) in _active
 
 
 def trigger_now(source_type: str, source_id: int) -> bool:
     """Immediately trigger an auto-sync run for the given source.
     Returns False if the source is already running."""
-    key = _source_key(source_type, source_id)
-    with _lock:
-        if key in _active:
-            return False
-        _active.add(key)
+    if not _try_acquire_source(source_type, source_id):
+        return False
     if source_type == "wnacg":
         threading.Thread(
-            target=_run_wnacg,
-            args=(source_id,),
+            target=_run_source_worker,
+            args=("wnacg", source_id),
             daemon=True,
             name=f"auto-sync-wnacg-{source_id}-manual",
         ).start()
     elif source_type == "x":
         threading.Thread(
-            target=_run_x,
-            args=(source_id,),
+            target=_run_source_worker,
+            args=("x", source_id),
             daemon=True,
             name=f"auto-sync-x-{source_id}-manual",
         ).start()
     else:
-        _active.discard(key)
+        _release_source(source_type, source_id)
         return False
     return True
 
@@ -653,25 +852,28 @@ def _restore_schedules() -> None:
         now = datetime.utcnow()
         for source in (
             db.query(models.ExternalFavoriteSource)
-            .filter(
-                models.ExternalFavoriteSource.auto_sync_enabled == True,  # noqa: E712
-                models.ExternalFavoriteSource.source_type == "wnacg",
-            )
+            .filter(models.ExternalFavoriteSource.source_type == "wnacg")
             .all()
         ):
+            if source.auto_sync_last_status == "running":
+                source.auto_sync_last_status = "failed"
+                source.auto_sync_last_message = "上次自动同步在服务重启前中断"
+            if not source.auto_sync_enabled:
+                continue
             if not source.auto_sync_next_run_at or source.auto_sync_next_run_at < now:
                 # Due or overdue — run soon (stagger by 60s to avoid thundering herd)
                 source.auto_sync_next_run_at = now + timedelta(seconds=60)
-            db.commit()
 
-        for source in (
-            db.query(models.XImportSource)
-            .filter(models.XImportSource.auto_sync_enabled == True)  # noqa: E712
-            .all()
-        ):
+        for source in db.query(models.XImportSource).all():
+            if source.auto_sync_last_status == "running":
+                source.auto_sync_last_status = "failed"
+                source.auto_sync_last_message = "上次自动同步在服务重启前中断"
+            if not source.auto_sync_enabled:
+                continue
             if not source.auto_sync_next_run_at or source.auto_sync_next_run_at < now:
                 source.auto_sync_next_run_at = now + timedelta(seconds=60)
-            db.commit()
+        _prune_auto_sync_logs(db)
+        db.commit()
     except Exception:
         traceback.print_exc()
     finally:

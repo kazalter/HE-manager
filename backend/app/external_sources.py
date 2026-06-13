@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+import json
 import os
 import re
 import time
@@ -50,6 +51,8 @@ def _request(
     retries: int = _FETCH_RETRIES,
     raise_on_status: bool = True,
     proxy: Optional[str] = None,
+    data: Optional[bytes | str] = None,
+    stream: bool = False,
 ):
     """Perform a GET/HEAD with browser TLS impersonation, retrying past
     Cloudflare's intermittent 403/connection-reset and swapping fingerprint
@@ -76,14 +79,17 @@ def _request(
     for impersonate in _IMPERSONATIONS:
         for attempt in range(max(1, retries)):
             try:
-                response = cffi_requests.request(
-                    method,
-                    url,
-                    headers=headers,
-                    timeout=timeout,
-                    impersonate=impersonate,
-                    proxies={"http": proxy, "https": proxy} if proxy else _proxies(),
-                )
+                request_kwargs = {
+                    "headers": headers,
+                    "timeout": timeout,
+                    "impersonate": impersonate,
+                    "proxies": {"http": proxy, "https": proxy} if proxy else _proxies(),
+                }
+                if data is not None:
+                    request_kwargs["data"] = data
+                if stream:
+                    request_kwargs["stream"] = True
+                response = cffi_requests.request(method, url, **request_kwargs)
             except Exception as exc:  # network reset / TLS abort -> retry
                 last_exc = exc
                 if attempt + 1 < max(1, retries):
@@ -128,6 +134,13 @@ class ParsedExternalFavorite:
 class WnacgCategory:
     id: str
     name: str
+
+
+@dataclass
+class WnacgWorkerArchiveRequest:
+    api_url: str
+    file_key: str
+    file_name: str
 
 
 class WnacgFavoriteParser(HTMLParser):
@@ -220,9 +233,36 @@ class WnacgFavoriteParser(HTMLParser):
         self._pending_cover_url = None
 
 
+class WnacgArchiveLinkParser(HTMLParser):
+    ARCHIVE_EXTENSIONS = (".zip", ".cbz")
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.urls: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: Iterable[tuple[str, Optional[str]]]):
+        if tag != "a":
+            return
+        attrs_dict = {name.lower(): value or "" for name, value in attrs}
+        href = unescape(attrs_dict.get("href", "")).strip()
+        if not href:
+            return
+        path = href.split("?", 1)[0].lower()
+        if not path.endswith(self.ARCHIVE_EXTENSIONS):
+            return
+        absolute = urljoin(self.base_url, href)
+        if absolute not in self.urls:
+            self.urls.append(absolute)
+
+
 def extract_wnacg_aid(url: str) -> Optional[str]:
     match = re.search(r"photos-index-aid-(\d+)\.html", url)
     return match.group(1) if match else None
+
+
+def wnacg_download_url(aid: str, base_url: str = WNACG_BASE_URL) -> str:
+    return urljoin(base_url, f"download-index-aid-{aid}.html")
 
 
 def parse_wnacg_categories(html: str) -> List[WnacgCategory]:
@@ -270,6 +310,59 @@ def parse_wnacg_image_urls(html: str) -> List[str]:
     return deduped
 
 
+def parse_wnacg_archive_urls(html: str, base_url: str = WNACG_BASE_URL) -> List[str]:
+    parser = WnacgArchiveLinkParser(base_url=base_url)
+    parser.feed(html)
+    return parser.urls
+
+
+def parse_wnacg_worker_archive_request(html: str) -> Optional[WnacgWorkerArchiveRequest]:
+    def read_config_string(name: str) -> Optional[str]:
+        match = re.search(rf"{name}\s*:\s*([\"'])(.*?)\1", html, re.S)
+        return unescape(match.group(2)).strip() if match else None
+
+    api_url = read_config_string("WORKER_API")
+    file_key = read_config_string("FILE_KEY")
+    file_name = read_config_string("FILE_NAME")
+    if not api_url or not file_key or not file_name:
+        return None
+    return WnacgWorkerArchiveRequest(api_url=api_url, file_key=file_key, file_name=file_name)
+
+
+def resolve_wnacg_worker_archive_url(
+    request: WnacgWorkerArchiveRequest,
+    *,
+    cookie: str,
+    referer: str,
+    timeout: Optional[int] = None,
+    proxy: Optional[str] = None,
+) -> Optional[str]:
+    payload = json.dumps(
+        {"file_key": request.file_key, "file_name": request.file_name},
+        ensure_ascii=False,
+    )
+    response = _request(
+        request.api_url,
+        cookie=cookie,
+        accept="application/json,text/plain,*/*",
+        referer=referer,
+        timeout=timeout or _FETCH_TIMEOUT_SECONDS,
+        method="POST",
+        extra_headers={"Content-Type": "application/json"},
+        data=payload.encode("utf-8"),
+        proxy=proxy,
+    )
+    try:
+        data = json.loads(response.content.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        raise RuntimeError("下载页返回的压缩包直链响应无法解析") from exc
+    if not data.get("success"):
+        message = data.get("msg") or data.get("message") or "未知错误"
+        raise RuntimeError(f"生成压缩包直链失败：{message}")
+    url = str(data.get("url") or "").strip()
+    return url or None
+
+
 def wnacg_category_url(category_id: str, page: int, base_url: str = WNACG_BASE_URL) -> str:
     return urljoin(base_url, f"users-users_fav-page-{page}-c-{category_id}.html")
 
@@ -304,6 +397,42 @@ def fetch_binary(url: str, cookie: str, referer: str = WNACG_BASE_URL, timeout: 
         proxy=proxy,
     )
     return response.content, response.headers.get("Content-Type", "application/octet-stream")
+
+
+def fetch_file_to_path(
+    url: str,
+    cookie: str,
+    destination_path: str,
+    referer: str = WNACG_BASE_URL,
+    timeout: Optional[int] = None,
+    proxy: Optional[str] = None,
+    accept: str = "application/zip,application/octet-stream,*/*",
+    on_chunk=None,
+) -> tuple[int, str]:
+    response = _request(
+        url,
+        cookie=cookie,
+        accept=accept,
+        referer=referer,
+        timeout=timeout or _FETCH_TIMEOUT_SECONDS,
+        proxy=proxy,
+        stream=True,
+    )
+    total = 0
+    try:
+        with open(destination_path, "wb") as out:
+            for chunk in response.iter_content(chunk_size=1024 * 512):
+                if not chunk:
+                    continue
+                out.write(chunk)
+                total += len(chunk)
+                if on_chunk is not None:
+                    on_chunk(len(chunk))
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    return total, response.headers.get("Content-Type", "application/octet-stream")
 
 
 def _content_length_from_headers(headers) -> Optional[int]:

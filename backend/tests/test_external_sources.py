@@ -1,4 +1,8 @@
 import unittest
+import os
+import shutil
+import tempfile
+import zipfile
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -87,6 +91,136 @@ class ExternalSourcesTest(unittest.TestCase):
                 "http://img5.qy0.ru/data/3214/23/02.webp",
             ],
         )
+
+    def test_parse_wnacg_archive_download_options(self):
+        html = """
+        <a class="ads" href="//dl1.wn01.download/down/3632/book.zip?n=Book">backup</a>
+        <script>
+        const CONFIG = {
+          WORKER_API: "https://d1.wcdn.date/api/generate-link",
+          FILE_KEY: "down/3632/book.zip",
+          FILE_NAME: "Book.zip"
+        };
+        </script>
+        """
+
+        urls = external_sources.parse_wnacg_archive_urls(
+            html,
+            base_url="https://www.wnacg.com/download-index-aid-363154.html",
+        )
+        worker = external_sources.parse_wnacg_worker_archive_request(html)
+
+        self.assertEqual(urls, ["https://dl1.wn01.download/down/3632/book.zip?n=Book"])
+        self.assertIsNotNone(worker)
+        self.assertEqual(worker.api_url, "https://d1.wcdn.date/api/generate-link")
+        self.assertEqual(worker.file_key, "down/3632/book.zip")
+        self.assertEqual(worker.file_name, "Book.zip")
+
+    def test_resolve_wnacg_worker_archive_url(self):
+        class Response:
+            content = b'{"success": true, "url": "https://cdn.example/book.zip"}'
+
+        def fake_request(url, **kwargs):
+            self.assertEqual(url, "https://worker.example/link")
+            self.assertEqual(kwargs["method"], "POST")
+            self.assertIn(b"book.zip", kwargs["data"])
+            return Response()
+
+        request = external_sources.WnacgWorkerArchiveRequest(
+            api_url="https://worker.example/link",
+            file_key="down/book.zip",
+            file_name="book.zip",
+        )
+        with patch.object(external_sources, "_request", fake_request):
+            url = external_sources.resolve_wnacg_worker_archive_url(
+                request,
+                cookie="session=test",
+                referer="https://www.wnacg.com/download-index-aid-1.html",
+            )
+
+        self.assertEqual(url, "https://cdn.example/book.zip")
+
+    def test_download_wnacg_item_prefers_zip_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_src = os.path.join(tmp, "book.zip")
+            with zipfile.ZipFile(archive_src, "w") as archive:
+                archive.writestr("pages/001.jpg", b"jpg")
+                archive.writestr("pages/002.png", b"png")
+
+            item_dir = os.path.join(tmp, "item")
+            item = models.ExternalFavoriteItem(
+                id=1,
+                source_type="wnacg",
+                external_id="1",
+                title="Book",
+                url="https://www.wnacg.com/photos-index-aid-1.html",
+            )
+            source = models.ExternalFavoriteSource(source_type="wnacg", cookie="")
+            plan = {
+                "item_dir": item_dir,
+                "image_urls": ["https://img.example/1.jpg", "https://img.example/2.png"],
+                "download_page_url": "https://www.wnacg.com/download-index-aid-1.html",
+                "archive_urls": ["https://cdn.example/book.zip"],
+                "archive_worker_request": None,
+            }
+            job = {
+                "pages_total": 2,
+                "pages_done": 0,
+                "downloaded_bytes": 0,
+                "current_book_total_pages": 2,
+                "current_book_downloaded_pages": 0,
+                "cancel_requested": False,
+                "tasks": [{"item_id": 1, "downloaded_pages": 0, "total_pages": 2}],
+            }
+
+            def fake_fetch_file_to_path(url, cookie, destination_path, **kwargs):
+                shutil.copyfile(archive_src, destination_path)
+                if kwargs.get("on_chunk"):
+                    kwargs["on_chunk"](os.path.getsize(archive_src))
+                return os.path.getsize(archive_src), "application/zip"
+
+            with (
+                patch.object(external_sources, "fetch_file_to_path", fake_fetch_file_to_path),
+                patch.object(external_sources, "fetch_binary", side_effect=AssertionError("image fallback should not run")),
+            ):
+                result = app_main.download_wnacg_item(item, source, plan, job)
+
+            self.assertEqual(result["method"], "archive")
+            self.assertTrue(os.path.exists(os.path.join(item_dir, "001.jpg")))
+            self.assertTrue(os.path.exists(os.path.join(item_dir, "002.png")))
+            self.assertTrue(os.path.exists(os.path.join(item_dir, "source.txt")))
+            self.assertEqual(job["pages_done"], 2)
+            self.assertEqual(job["tasks"][0]["downloaded_pages"], 2)
+
+    def test_download_wnacg_item_falls_back_when_archive_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            item_dir = os.path.join(tmp, "item")
+            item = models.ExternalFavoriteItem(
+                id=1,
+                source_type="wnacg",
+                external_id="1",
+                title="Book",
+                url="https://www.wnacg.com/photos-index-aid-1.html",
+            )
+            source = models.ExternalFavoriteSource(source_type="wnacg", cookie="")
+            plan = {
+                "item_dir": item_dir,
+                "image_urls": ["https://img.example/1.jpg"],
+                "download_page_url": "https://www.wnacg.com/download-index-aid-1.html",
+                "archive_urls": ["https://cdn.example/broken.zip"],
+                "archive_worker_request": None,
+            }
+
+            with (
+                patch.object(external_sources, "fetch_file_to_path", side_effect=RuntimeError("expired")),
+                patch.object(external_sources, "fetch_binary", return_value=(b"jpg", "image/jpeg")),
+                patch.object(app_main.time, "sleep", lambda _: None),
+            ):
+                result = app_main.download_wnacg_item(item, source, plan, job=None)
+
+            self.assertEqual(result["method"], "images")
+            self.assertTrue(os.path.exists(os.path.join(item_dir, "001.jpg")))
+            self.assertTrue(os.path.exists(os.path.join(item_dir, "source.txt")))
 
     def test_external_source_and_items_are_persisted(self):
         db = self.Session()
